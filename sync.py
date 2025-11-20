@@ -93,7 +93,14 @@ def sync_to_server(local_file: str, server: ServerConfig):
     reraise=True,
 )
 def delete_from_server(file_path: str, server: ServerConfig):
-    filename = os.path.basename(file_path)
+    # Тестируем доработку логики удаления
+    # filename = os.path.basename(file_path)
+    if file_path.endswith(".save"):
+        filename = os.path.basename(file_path[:-5] + ".yaml")
+    else:
+        filename = os.path.basename(file_path)
+    # Тестируем доработку логики удаления
+
     remote_file = os.path.join(server.remote_path, filename)
     remote_link = os.path.join(server.auxiliary_remote_path, filename)
     logger.info("delete_from_server called for %s on %s", filename, server.host)
