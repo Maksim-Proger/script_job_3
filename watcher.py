@@ -167,11 +167,35 @@ class ConfigChangeHandler(FileSystemEventHandler):
         filename = os.path.basename(path)
         logger.info("File deleted → %s", filename)
 
-        self._delete_local_symlink(path)
+        # Тестируем новую логику удаления
+        # self._delete_local_symlink(path)
 
+        # for server in self.servers:
+        #     logger.info("Submitting delete_from_server for %s -> %s", path, server.host)
+        #     self.executor.submit(delete_from_server, path, server)
+
+        # Если удалили .save → удаляем .yaml и его симлинк
+        if path.endswith(".save"):
+            yaml_path = path[:-5] + ".yaml"
+        else:
+            yaml_path = path
+
+        # Удаляем YAML на master
+        if os.path.exists(yaml_path):
+            try:
+                os.remove(yaml_path)
+                logger.info("Removed YAML file on master: %s", yaml_path)
+            except Exception as e:
+                logger.error("Failed to remove YAML file %s: %s", yaml_path, e)
+
+        # Удаляем симлинк (.yaml)
+        self._delete_local_symlink(yaml_path)
+
+        # Передаём YAML на удаление slave-серверам
         for server in self.servers:
-            logger.info("Submitting delete_from_server for %s -> %s", path, server.host)
-            self.executor.submit(delete_from_server, path, server)
+            logger.info("Submitting delete_from_server for %s -> %s", yaml_path, server.host)
+            self.executor.submit(delete_from_server, yaml_path, server)
+        # Тестируем новую логику удаления
 
     on_deleted = _file_deleted
 
