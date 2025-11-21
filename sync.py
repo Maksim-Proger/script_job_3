@@ -24,10 +24,10 @@ def sync_to_server(local_file: str, server: ServerConfig):
     sftp = None
 
     try:
-        logger.debug(f"SSH → {server.username}@{server.host}:{server.port}")
+        logger.debug(f"SSH → {server.username}@{server.host}:{server.ssh_port}")
         ssh.connect(
             hostname=server.host,
-            port=server.port,
+            port=server.ssh_port,
             username=server.username,
             key_filename=str(server.key_filename),
             timeout=15,
@@ -108,7 +108,7 @@ def delete_from_server(file_path: str, server: ServerConfig):
     try:
         ssh.connect(
             hostname=server.host,
-            port=server.port,
+            port=server.ssh_port,
             username=server.username,
             key_filename=str(server.key_filename),
             timeout=15,

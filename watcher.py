@@ -135,7 +135,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         for server in self.servers:
             try:
                 self.executor.submit(self._sync_file, yaml_path, server)
-                self.executor.submit(send_api_request, server.host, server.port, action, yaml_path)
+                self.executor.submit(send_api_request, server.host, server.api_port, action, yaml_path)
             except Exception:
                 logger.exception("Failed to submit sync job for %s -> %s", yaml_path,
                                  getattr(server, "host", "<no-host>"))
@@ -205,7 +205,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         for server in self.servers:
             logger.info("Submitting delete_from_server for %s -> %s", yaml_path, server.host)
             self.executor.submit(delete_from_server, yaml_path, server)
-            self.executor.submit(send_api_request, server.host, server.port, "delete", yaml_path)
+            self.executor.submit(send_api_request, server.host, server.api_port, "delete", yaml_path)
 
     on_deleted = _file_deleted
 

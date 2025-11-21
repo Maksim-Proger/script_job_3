@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field, FilePath, field_validator
 
 class ServerConfig(BaseModel):
     host: str
-    port: int = Field(ge=1, le=65535)
+    ssh_port: int = Field(ge=1, le=65535)
+    api_port: int = Field(ge=1, le=65535)
     username: str
     key_filename: FilePath
     remote_path: str
