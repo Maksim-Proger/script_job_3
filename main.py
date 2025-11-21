@@ -3,7 +3,6 @@ from logging_formatter import logging_formatter
 from watcher import start_watcher
 from config_loader import load_config
 
-
 def main():
     logging_formatter()
     config = load_config("config.yaml")
