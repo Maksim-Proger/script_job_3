@@ -7,6 +7,7 @@ from watchdog.events import FileSystemEventHandler
 from status import check_service_status
 from sync import sync_to_server
 from sync import delete_from_server
+from api_client import send_api_request
 
 logger = logging.getLogger("watcher")
 
@@ -107,8 +108,12 @@ class ConfigChangeHandler(FileSystemEventHandler):
         yaml_path = path[:-5] + ".yaml"
 
         if not os.path.isfile(yaml_path):
-            logger.warning("YAML counterpart does not exist for %s (expected %s)", path, yaml_path)
-            return
+            action = "new"  # теоретически
+            logger.info("New YAML file detected → %s", yaml_path)
+        else:
+            action = "update"
+            logger.info("Existing YAML file updated → %s", yaml_path)
+
 
         # create symlink for .yaml, not .save
         try:
@@ -130,6 +135,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         for server in self.servers:
             try:
                 self.executor.submit(self._sync_file, yaml_path, server)
+                self.executor.submit(send_api_request, server.host, server.port, action, yaml_path)
             except Exception:
                 logger.exception("Failed to submit sync job for %s -> %s", yaml_path,
                                  getattr(server, "host", "<no-host>"))
@@ -199,7 +205,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         for server in self.servers:
             logger.info("Submitting delete_from_server for %s -> %s", yaml_path, server.host)
             self.executor.submit(delete_from_server, yaml_path, server)
-        # Тестируем новую логику удаления
+            self.executor.submit(send_api_request, server.host, server.port, "delete", yaml_path)
 
     on_deleted = _file_deleted
 
