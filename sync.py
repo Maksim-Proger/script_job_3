@@ -29,7 +29,7 @@ def sync_to_server(local_file: str, server: ServerConfig):
             hostname=server.host,
             port=server.port,
             username=server.username,
-            key_filename=server.key_filename,
+            key_filename=str(server.key_filename),
             timeout=15,
         )
 
@@ -53,7 +53,6 @@ def sync_to_server(local_file: str, server: ServerConfig):
         target_relative = os.path.relpath(remote_full_path, start=remote_aux_dir)
 
         try:
-            # st = sftp.lstat(remote_link_path)
             logger.debug("Remote link exists (will replace): %s on %s", remote_link_path, server.host)
             sftp.remove(remote_link_path)
         except IOError:
@@ -93,13 +92,10 @@ def sync_to_server(local_file: str, server: ServerConfig):
     reraise=True,
 )
 def delete_from_server(file_path: str, server: ServerConfig):
-    # Тестируем доработку логики удаления
-    # filename = os.path.basename(file_path)
     if file_path.endswith(".save"):
         filename = os.path.basename(file_path[:-5] + ".yaml")
     else:
         filename = os.path.basename(file_path)
-    # Тестируем доработку логики удаления
 
     remote_file = os.path.join(server.remote_path, filename)
     remote_link = os.path.join(server.auxiliary_remote_path, filename)
@@ -114,7 +110,7 @@ def delete_from_server(file_path: str, server: ServerConfig):
             hostname=server.host,
             port=server.port,
             username=server.username,
-            key_filename=server.key_filename,
+            key_filename=str(server.key_filename),
             timeout=15,
         )
         sftp = ssh.open_sftp()

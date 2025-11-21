@@ -3,7 +3,6 @@ import yaml
 from typing import List
 from pydantic import BaseModel, Field, FilePath, field_validator
 
-
 class ServerConfig(BaseModel):
     host: str
     port: int = Field(ge=1, le=65535)
@@ -36,7 +35,6 @@ class AppConfig(BaseModel):
         if not os.path.isdir(v):
             raise ValueError(f"Directory does not exist: {v}")
         return os.path.abspath(v)
-
 
 def load_config(path: str = "config.yaml") -> AppConfig:
     if not os.path.exists(path):
