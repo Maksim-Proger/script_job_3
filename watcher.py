@@ -4,6 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from status import check_service_status
 from sync import sync_to_server
 from sync import delete_from_server
 
@@ -14,12 +15,14 @@ class ConfigChangeHandler(FileSystemEventHandler):
                  servers,
                  debounce_seconds: float,
                  watch_dir: str,
-                 auxiliary_watch_dir: str):
+                 auxiliary_watch_dir: str,
+                 status_check):
         super().__init__()
         self.servers = servers
         self.debounce_seconds = debounce_seconds
         self.watch_dir = os.path.abspath(watch_dir)
         self.auxiliary_watch_dir = os.path.abspath(auxiliary_watch_dir)
+        self.status_check = status_check
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.last_sync_time = {}
 
@@ -113,6 +116,14 @@ class ConfigChangeHandler(FileSystemEventHandler):
         except Exception:
             logger.exception("Failed to create local symlink for %s", yaml_path)
 
+        # Проверка статуса на master (локально)
+        if not check_service_status(
+                process_name=self.status_check.process_name,
+                min_uptime=self.status_check.min_uptime_seconds
+        ):
+            logger.error("Master server process check failed — aborting sync")
+            return  # не идём дальше, не синхронизируем на slave
+
         filename = os.path.basename(yaml_path)
         logger.info("Change detected (triggered by .save) → %s", filename)
 
@@ -167,13 +178,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
         filename = os.path.basename(path)
         logger.info("File deleted → %s", filename)
 
-        # Тестируем новую логику удаления
-        # self._delete_local_symlink(path)
-
-        # for server in self.servers:
-        #     logger.info("Submitting delete_from_server for %s -> %s", path, server.host)
-        #     self.executor.submit(delete_from_server, path, server)
-
         # Если удалили .save → удаляем .yaml и его симлинк
         if path.endswith(".save"):
             yaml_path = path[:-5] + ".yaml"
@@ -202,14 +206,16 @@ class ConfigChangeHandler(FileSystemEventHandler):
 def start_watcher(watch_dir: str,
                   auxiliary_watch_dir: str,
                   servers,
-                  debounce_seconds: float):
+                  debounce_seconds: float,
+                  status_check):
     logger.info("Starting watcher → %s", watch_dir)
 
     event_handler = ConfigChangeHandler(
         servers,
         debounce_seconds,
         watch_dir,
-        auxiliary_watch_dir
+        auxiliary_watch_dir,
+        status_check
     )
     observer = Observer()
     observer.schedule(event_handler, path=watch_dir, recursive=True)

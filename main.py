@@ -1,9 +1,8 @@
 import os
-from config_loader import load_config
 from logging_formatter import logging_formatter
 from watcher import start_watcher
+from config_loader import load_config
 
-# Этот вариант с обработчиком настроенным на отслеживание файла с расширением .save
 
 def main():
     logging_formatter()
@@ -16,7 +15,8 @@ def main():
         watch_dir=config.watch_dir,
         auxiliary_watch_dir=config.auxiliary_watch_dir,
         servers=config.servers,
-        debounce_seconds=config.debounce_seconds
+        debounce_seconds=config.debounce_seconds,
+        status_check=config.status_check
     )
 
 if __name__ == "__main__":

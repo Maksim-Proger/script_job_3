@@ -1,23 +1,42 @@
 import os
 import yaml
-from dataclasses import dataclass
 from typing import List
+from pydantic import BaseModel, Field, FilePath, field_validator
 
-@dataclass
-class ServerConfig:
+
+class ServerConfig(BaseModel):
     host: str
-    port: int
+    port: int = Field(ge=1, le=65535)
     username: str
-    key_filename: str
+    key_filename: FilePath
     remote_path: str
     auxiliary_remote_path: str
 
-@dataclass
-class AppConfig:
+    @field_validator("remote_path", "auxiliary_remote_path")
+    def validate_remote_paths(cls, v):
+        if not v or not isinstance(v, str):
+            raise ValueError("Path cannot be empty")
+        if not v.startswith("/"):
+            raise ValueError("Remote paths must be absolute (start with '/')")
+        return v
+
+class StatusCheckConfig(BaseModel):
+    process_name: str
+    min_uptime_seconds: float = Field(ge=0)
+
+class AppConfig(BaseModel):
     watch_dir: str
     auxiliary_watch_dir: str
-    debounce_seconds: float
+    debounce_seconds: float = Field(ge=0.1, le=30)
     servers: List[ServerConfig]
+    status_check: StatusCheckConfig
+
+    @field_validator("watch_dir", "auxiliary_watch_dir")
+    def validate_local_directories(cls, v):
+        if not os.path.isdir(v):
+            raise ValueError(f"Directory does not exist: {v}")
+        return os.path.abspath(v)
+
 
 def load_config(path: str = "config.yaml") -> AppConfig:
     if not os.path.exists(path):
@@ -26,35 +45,4 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     with open(path, "r") as f:
         raw = yaml.safe_load(f)
 
-    required_top = ["watch_dir", "auxiliary_watch_dir", "debounce_seconds", "servers"]
-    for k in required_top:
-        if k not in raw:
-            raise ValueError(f"Missing `{k}` in config.yaml")
-
-    watch_dir = raw["watch_dir"]
-    auxiliary_watch_dir = raw["auxiliary_watch_dir"]
-    debounce_seconds = float(raw["debounce_seconds"])
-
-    servers = []
-    for s in raw["servers"]:
-        for key in ["host", "port", "username", "key_filename", "remote_path", "auxiliary_remote_path"]:
-            if key not in s:
-                raise ValueError(f"Missing `{key}` in server entry")
-
-        servers.append(
-            ServerConfig(
-                host=s["host"],
-                port=int(s["port"]),
-                username=s["username"],
-                key_filename=s["key_filename"],
-                remote_path=s["remote_path"],
-                auxiliary_remote_path=s["auxiliary_remote_path"]
-            )
-        )
-
-    return AppConfig(
-        watch_dir=watch_dir,
-        auxiliary_watch_dir=auxiliary_watch_dir,
-        debounce_seconds=debounce_seconds,
-        servers=servers,
-    )
+    return AppConfig.model_validate(raw)
