@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from status import wait_for_service_healthy
+from status import check_service_status
 from sync import sync_to_server
 from sync import delete_from_server
 from api_client import send_api_request
@@ -51,54 +52,54 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 getattr(server, "ssh_port", "<no-port>"), e, exc_info=True
             )
 
-    def _create_local_symlink(self, file_path: str):
-        filename = os.path.basename(file_path)
-        link_path = os.path.join(self.auxiliary_watch_dir, filename)
-        link_dir = os.path.dirname(link_path)
-
-        os.makedirs(link_dir, exist_ok=True)
-
-        target = os.path.relpath(file_path, start=link_dir)
-
-        try:
-            if os.path.islink(link_path):
-                existing = os.readlink(link_path)
-                if existing == target:
-                    logger.debug(
-                        "action=symlink_skip path=%s target=%s",
-                        link_path, target
-                    )
-                    return
-                else:
-                    logger.info(
-                        "action=symlink_replace path=%s old_target=%s new_target=%s",
-                        link_path, existing, target
-                    )
-                    os.remove(link_path)
-            elif os.path.exists(link_path):
-                logger.warning(
-                    "action=symlink_failed path=%s reason=exists_not_symlink",
-                    link_path
-                )
-                return
-        except OSError as e:
-            logger.error(
-                "action=symlink_check_failed path=%s error=%s",
-                link_path, e
-            )
-            return
-
-        try:
-            os.symlink(target, link_path)
-            logger.info(
-                "action=symlink_created path=%s target=%s",
-                link_path, target
-            )
-        except OSError as e:
-            logger.error(
-                "action=symlink_failed path=%s target=%s error=%s",
-                link_path, target, e
-            )
+    # def _create_local_symlink(self, file_path: str):
+    #     filename = os.path.basename(file_path)
+    #     link_path = os.path.join(self.auxiliary_watch_dir, filename)
+    #     link_dir = os.path.dirname(link_path)
+    #
+    #     os.makedirs(link_dir, exist_ok=True)
+    #
+    #     target = os.path.relpath(file_path, start=link_dir)
+    #
+    #     try:
+    #         if os.path.islink(link_path):
+    #             existing = os.readlink(link_path)
+    #             if existing == target:
+    #                 logger.debug(
+    #                     "action=symlink_skip path=%s target=%s",
+    #                     link_path, target
+    #                 )
+    #                 return
+    #             else:
+    #                 logger.info(
+    #                     "action=symlink_replace path=%s old_target=%s new_target=%s",
+    #                     link_path, existing, target
+    #                 )
+    #                 os.remove(link_path)
+    #         elif os.path.exists(link_path):
+    #             logger.warning(
+    #                 "action=symlink_failed path=%s reason=exists_not_symlink",
+    #                 link_path
+    #             )
+    #             return
+    #     except OSError as e:
+    #         logger.error(
+    #             "action=symlink_check_failed path=%s error=%s",
+    #             link_path, e
+    #         )
+    #         return
+    #
+    #     try:
+    #         os.symlink(target, link_path)
+    #         logger.info(
+    #             "action=symlink_created path=%s target=%s",
+    #             link_path, target
+    #         )
+    #     except OSError as e:
+    #         logger.error(
+    #             "action=symlink_failed path=%s target=%s error=%s",
+    #             link_path, target, e
+    #         )
 
     def _handle_event_path(self, src: str):
         if not src:
@@ -153,19 +154,27 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 yaml_path
             )
 
-        try:
-            self._create_local_symlink(yaml_path)
-        except OSError as e:
-            logger.exception(
-                "action=symlink_failed path=%s error=%s",
-                yaml_path, e
-            )
+        # try:
+        #     self._create_local_symlink(yaml_path)
+        # except OSError as e:
+        #     logger.exception(
+        #         "action=symlink_failed path=%s error=%s",
+        #         yaml_path, e
+        #     )
 
-        if not wait_for_service_healthy(
+        # Двойная проверка с попытками
+        # if not wait_for_service_healthy(
+        #         process_name=self.status_check.process_name,
+        #         min_uptime=self.status_check.min_uptime_seconds,
+        #         retries=self.status_check.retries,
+        #         delay=self.status_check.delay_seconds
+        # ):
+        #     logger.error("action=service_check_failed")
+        #     return
+        # Простая разовая проверка
+        if not check_service_status(
                 process_name=self.status_check.process_name,
-                min_uptime=self.status_check.min_uptime_seconds,
-                retries=self.status_check.retries,
-                delay=self.status_check.delay_seconds
+                min_uptime=self.status_check.min_uptime_seconds
         ):
             logger.error("action=service_check_failed")
             return
@@ -200,36 +209,36 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
     on_modified = on_created = on_moved = _file_event
 
-    def _delete_local_symlink(self, file_path: str):
-        filename = os.path.basename(file_path)
-        link_path = os.path.join(self.auxiliary_watch_dir, filename)
-        logger.info(
-            "action=delete_local_symlink_attempt path=%s",
-            link_path
-        )
-
-        if os.path.islink(link_path):
-            try:
-                os.remove(link_path)
-                logger.info(
-                    "action=delete_local_symlink_success path=%s",
-                    link_path
-                )
-            except OSError as e:
-                logger.error(
-                    "action=delete_local_symlink_failed path=%s error=%s",
-                    link_path, e
-                )
-        elif os.path.exists(link_path):
-            logger.warning(
-                "action=delete_local_symlink_failed path=%s reason=exists_not_symlink",
-                link_path
-            )
-        else:
-            logger.info(
-                "action=delete_local_symlink_skip path=%s reason=not_exist",
-                link_path
-            )
+    # def _delete_local_symlink(self, file_path: str):
+    #     filename = os.path.basename(file_path)
+    #     link_path = os.path.join(self.auxiliary_watch_dir, filename)
+    #     logger.info(
+    #         "action=delete_local_symlink_attempt path=%s",
+    #         link_path
+    #     )
+    #
+    #     if os.path.islink(link_path):
+    #         try:
+    #             os.remove(link_path)
+    #             logger.info(
+    #                 "action=delete_local_symlink_success path=%s",
+    #                 link_path
+    #             )
+    #         except OSError as e:
+    #             logger.error(
+    #                 "action=delete_local_symlink_failed path=%s error=%s",
+    #                 link_path, e
+    #             )
+    #     elif os.path.exists(link_path):
+    #         logger.warning(
+    #             "action=delete_local_symlink_failed path=%s reason=exists_not_symlink",
+    #             link_path
+    #         )
+    #     else:
+    #         logger.info(
+    #             "action=delete_local_symlink_skip path=%s reason=not_exist",
+    #             link_path
+    #         )
 
     def _file_deleted(self, event):
         logger.info(
@@ -276,7 +285,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     yaml_path, e
                 )
 
-        self._delete_local_symlink(yaml_path)
+        # self._delete_local_symlink(yaml_path)
 
         for server in self.servers:
             logger.info(
