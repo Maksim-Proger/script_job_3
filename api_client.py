@@ -19,13 +19,17 @@ def send_api_request(server_host: str, server_port: int, action: str, file_path:
     elif action == "new":
         data = {"update": {"new-configs": [{"path": file_path}]}}
     else:
-        logger.error("Unknown API action: %s", action)
+        logger.error("invalid action: %s", action)
         return
 
     try:
         requests.post(url, headers=headers, data=json.dumps(data), timeout=5)
-        logger.info("API request sent: %s %s → %s:%s", action, file_path, server_host, server_port)
+        logger.info(
+            "action=%s path=%s target=%s:%s",
+            action, file_path, server_host, server_port
+        )
     except Exception as e:
         logger.error(
-            "Failed to send API request %s %s → %s:%s | %s", action, file_path, server_host, server_port, e
+            "action=%s path=%s target=%s:%s error=%s",
+            action, file_path, server_host, server_port, e
         )

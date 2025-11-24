@@ -4,7 +4,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from status import check_service_status
+from status import wait_for_service_healthy
 from sync import sync_to_server
 from sync import delete_from_server
 from api_client import send_api_request
@@ -32,7 +32,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
     def _debounce_check(self, path):
         now = time.time()
         if now - self.last_sync_time.get(path, 0) < self.debounce_seconds:
-            logger.debug("Skip %s — debounced", os.path.basename(path))
+            logger.debug(
+                "action=debounced path=%s",
+                os.path.basename(path)
+            )
             return True
         self.last_sync_time[path] = now
         return False
@@ -42,7 +45,11 @@ class ConfigChangeHandler(FileSystemEventHandler):
         try:
             sync_to_server(local_file, server)
         except Exception as e:
-            logger.error("Failed → %s:%s | %s", server.host, local_file, e, exc_info=True)
+            logger.error(
+                "action=sync path=%s target=%s:%s error=%s",
+                local_file, server.host,
+                getattr(server, "ssh_port", "<no-port>"), e, exc_info=True
+            )
 
     def _create_local_symlink(self, file_path: str):
         filename = os.path.basename(file_path)
@@ -57,23 +64,41 @@ class ConfigChangeHandler(FileSystemEventHandler):
             if os.path.islink(link_path):
                 existing = os.readlink(link_path)
                 if existing == target:
-                    logger.debug("Local symlink already correct: %s -> %s", link_path, target)
+                    logger.debug(
+                        "action=symlink_skip path=%s target=%s",
+                        link_path, target
+                    )
                     return
                 else:
-                    logger.info("Replacing local symlink %s (was %s -> %s)", link_path, existing, target)
+                    logger.info(
+                        "action=symlink_replace path=%s old_target=%s new_target=%s",
+                        link_path, existing, target
+                    )
                     os.remove(link_path)
             elif os.path.exists(link_path):
-                logger.warning("Cannot create symlink, path exists and is not a symlink: %s", link_path)
+                logger.warning(
+                    "action=symlink_failed path=%s reason=exists_not_symlink",
+                    link_path
+                )
                 return
         except OSError as e:
-            logger.error("Error checking existing link %s: %s", link_path, e)
+            logger.error(
+                "action=symlink_check_failed path=%s error=%s",
+                link_path, e
+            )
             return
 
         try:
             os.symlink(target, link_path)
-            logger.info("Local symlink created: %s -> %s", link_path, target)
-        except Exception as e:
-            logger.error("Failed to create local symlink %s -> %s: %s", link_path, target, e)
+            logger.info(
+                "action=symlink_created path=%s target=%s",
+                link_path, target
+            )
+        except OSError as e:
+            logger.error(
+                "action=symlink_failed path=%s target=%s error=%s",
+                link_path, target, e
+            )
 
     def _handle_event_path(self, src: str):
         if not src:
@@ -82,18 +107,30 @@ class ConfigChangeHandler(FileSystemEventHandler):
         path = os.path.abspath(src)
 
         if not path.endswith(".save"):
-            logger.debug("Not a .save file, skipping: %s", path)
+            logger.debug(
+                "action=skip path=%s reason=not_save",
+                path
+            )
             return
 
         if not path.startswith(self.watch_dir + os.sep):
-            logger.debug("Event outside watch_dir, skipping: %s", path)
+            logger.debug(
+                "action=skip path=%s reason=outside_watch_dir",
+                path
+            )
             return
 
         if path.startswith(self.auxiliary_watch_dir + os.sep):
-            logger.debug("Event inside auxiliary dir, skipping: %s", path)
+            logger.debug(
+                "action=skip path=%s reason=inside_aux_dir",
+                path
+            )
             return
 
         if os.path.isdir(path):
+            return
+
+        if self._debounce_check(path):
             return
 
         time.sleep(0.15)
@@ -101,44 +138,54 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not os.path.isfile(path):
             return
 
-        if self._debounce_check(path):
-            return
-
-        # convert .save → .yaml
         yaml_path = path[:-5] + ".yaml"
 
         if not os.path.isfile(yaml_path):
-            action = "new"  # теоретически
-            logger.info("New YAML file detected → %s", yaml_path)
+            action = "new"
+            logger.info(
+                "action=new path=%s",
+                yaml_path
+            )
         else:
             action = "update"
-            logger.info("Existing YAML file updated → %s", yaml_path)
+            logger.info(
+                "action=update path=%s",
+                yaml_path
+            )
 
-
-        # create symlink for .yaml, not .save
         try:
             self._create_local_symlink(yaml_path)
-        except Exception:
-            logger.exception("Failed to create local symlink for %s", yaml_path)
+        except OSError as e:
+            logger.exception(
+                "action=symlink_failed path=%s error=%s",
+                yaml_path, e
+            )
 
-        # Проверка статуса на master (локально)
-        if not check_service_status(
+        if not wait_for_service_healthy(
                 process_name=self.status_check.process_name,
-                min_uptime=self.status_check.min_uptime_seconds
+                min_uptime=self.status_check.min_uptime_seconds,
+                retries=self.status_check.retries,
+                delay=self.status_check.delay_seconds
         ):
-            logger.error("Master server process check failed — aborting sync")
-            return  # не идём дальше, не синхронизируем на slave
+            logger.error("action=service_check_failed")
+            return
 
         filename = os.path.basename(yaml_path)
-        logger.info("Change detected (triggered by .save) → %s", filename)
+        logger.info(
+            "action=change_detected path=%s triggered_by=.save",
+            filename
+        )
 
         for server in self.servers:
             try:
                 self.executor.submit(self._sync_file, yaml_path, server)
                 self.executor.submit(send_api_request, server.host, server.api_port, action, yaml_path)
-            except Exception:
-                logger.exception("Failed to submit sync job for %s -> %s", yaml_path,
-                                 getattr(server, "host", "<no-host>"))
+            except RuntimeError as e:
+                logger.exception(
+                    "action=submit_failed path=%s target=%s error=%s",
+                    yaml_path,
+                    getattr(server, "host", "<no-host>"), e
+                )
 
     def _file_event(self, event):
         if event.is_directory:
@@ -156,54 +203,86 @@ class ConfigChangeHandler(FileSystemEventHandler):
     def _delete_local_symlink(self, file_path: str):
         filename = os.path.basename(file_path)
         link_path = os.path.join(self.auxiliary_watch_dir, filename)
-        logger.info("Attempting to remove local symlink: %s", link_path)
+        logger.info(
+            "action=delete_local_symlink_attempt path=%s",
+            link_path
+        )
 
         if os.path.islink(link_path):
             try:
                 os.remove(link_path)
-                logger.info("Removed local symlink: %s", link_path)
-            except Exception as e:
-                logger.error("Failed to remove local symlink %s: %s", link_path, e)
+                logger.info(
+                    "action=delete_local_symlink_success path=%s",
+                    link_path
+                )
+            except OSError as e:
+                logger.error(
+                    "action=delete_local_symlink_failed path=%s error=%s",
+                    link_path, e
+                )
         elif os.path.exists(link_path):
-            logger.warning("Cannot remove %s — exists but is not a symlink", link_path)
+            logger.warning(
+                "action=delete_local_symlink_failed path=%s reason=exists_not_symlink",
+                link_path
+            )
         else:
-            logger.info("Symlink does not exist: %s", link_path)
+            logger.info(
+                "action=delete_local_symlink_skip path=%s reason=not_exist",
+                link_path
+            )
 
     def _file_deleted(self, event):
-        logger.info("on_deleted event received: %s", event)
+        logger.info(
+            "action=file_deleted_event_received event=%s",
+            event
+        )
         if event.is_directory:
             return
 
         path = os.path.abspath(event.src_path)
-        logger.info("Deleted file path: %s", path)
+        logger.info(
+            "action=file_deleted_path path=%s",
+            path
+        )
 
         if not path.startswith(self.watch_dir + os.sep):
-            logger.info("Deleted file outside watch_dir, skipping: %s", path)
+            logger.info(
+                "action=delete_skip path=%s reason=outside_watch_dir",
+                path
+            )
             return
 
         filename = os.path.basename(path)
-        logger.info("File deleted → %s", filename)
+        logger.info(
+            "action=file_deleted path=%s",
+            filename
+        )
 
-        # Если удалили .save → удаляем .yaml и его симлинк
         if path.endswith(".save"):
             yaml_path = path[:-5] + ".yaml"
         else:
             yaml_path = path
 
-        # Удаляем YAML на master
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
-                logger.info("Removed YAML file on master: %s", yaml_path)
-            except Exception as e:
-                logger.error("Failed to remove YAML file %s: %s", yaml_path, e)
+                logger.info(
+                    "action=deleted_master_yaml path=%s",
+                    yaml_path
+                )
+            except OSError as e:
+                logger.error(
+                    "action=delete_master_yaml_failed path=%s error=%s",
+                    yaml_path, e
+                )
 
-        # Удаляем симлинк (.yaml)
         self._delete_local_symlink(yaml_path)
 
-        # Передаём YAML на удаление slave-серверам
         for server in self.servers:
-            logger.info("Submitting delete_from_server for %s -> %s", yaml_path, server.host)
+            logger.info(
+                "action=submit_delete path=%s target=%s",
+                yaml_path, server.host
+            )
             self.executor.submit(delete_from_server, yaml_path, server)
             self.executor.submit(send_api_request, server.host, server.api_port, "delete", yaml_path)
 
@@ -214,7 +293,10 @@ def start_watcher(watch_dir: str,
                   servers,
                   debounce_seconds: float,
                   status_check):
-    logger.info("Starting watcher → %s", watch_dir)
+    logger.info(
+        "action=start_watcher path=%s",
+        watch_dir
+    )
 
     event_handler = ConfigChangeHandler(
         servers,
@@ -226,15 +308,18 @@ def start_watcher(watch_dir: str,
     observer = Observer()
     observer.schedule(event_handler, path=watch_dir, recursive=True)
     observer.start()
-    logger.info("Observer started (thread alive=%s)", observer.is_alive())
+    logger.info(
+        "action=observer_started thread_alive=%s",
+        observer.is_alive()
+    )
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received — stopping watcher")
+        logger.info("action=watcher_keyboard_interrupt")
     finally:
         observer.stop()
         observer.join()
         event_handler.executor.shutdown(wait=True)
-        logger.info("Watcher stopped")
+        logger.info("action=watcher_stopped")

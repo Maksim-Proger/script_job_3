@@ -4,6 +4,8 @@ debounce_seconds: 1.5
 status_check:
   process_name: "cron"
   min_uptime_seconds: 10
+  retries: 5
+  delay_seconds: 10
 
 servers:
   - host: "192.168.56.102"
@@ -14,10 +16,9 @@ servers:
     remote_path: "/home/vboxuser/ymalfiles"
     auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"
 
-#  - host: "192.168.56.103"
-#    port: 22
-#    username: "vboxuser"
-#    key_filename: "/home/vboxuser/.ssh/id_ed25519"
-#    remote_path: "/home/vboxuser/ymalfiles"
-#    auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"
-
+  - host: "192.168.56.103"
+    port: 22
+    username: "vboxuser"
+    key_filename: "/home/vboxuser/.ssh/id_ed25519"
+    remote_path: "/home/vboxuser/ymalfiles"
+    auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"

@@ -13,16 +13,18 @@ class ServerConfig(BaseModel):
     auxiliary_remote_path: str
 
     @field_validator("remote_path", "auxiliary_remote_path")
-    def validate_remote_paths(cls, v):
-        if not v or not isinstance(v, str):
-            raise ValueError("Path cannot be empty")
-        if not v.startswith("/"):
-            raise ValueError("Remote paths must be absolute (start with '/')")
-        return v
+    def validate_remote_paths(cls, path: str):
+        if not path or not isinstance(path, str):
+            raise ValueError("path is empty")
+        if not path.startswith("/"):
+            raise ValueError("path must be absolute (start with '/')")
+        return path
 
 class StatusCheckConfig(BaseModel):
     process_name: str
     min_uptime_seconds: float = Field(ge=0)
+    retries: int = Field(default=5, ge=1)
+    delay_seconds: float = Field(default=10.0, ge=0)
 
 class AppConfig(BaseModel):
     watch_dir: str
@@ -32,16 +34,16 @@ class AppConfig(BaseModel):
     status_check: StatusCheckConfig
 
     @field_validator("watch_dir", "auxiliary_watch_dir")
-    def validate_local_directories(cls, v):
-        if not os.path.isdir(v):
-            raise ValueError(f"Directory does not exist: {v}")
-        return os.path.abspath(v)
+    def validate_local_directories(cls, path: str):
+        if not os.path.isdir(path):
+            raise ValueError(f"directory does not exist: {path}")
+        return os.path.abspath(path)
 
 def load_config(path: str = "config.yaml") -> AppConfig:
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Config file not found: {path}")
+        raise FileNotFoundError(f"config not found: {path}")
 
-    with open(path, "r") as f:
-        raw = yaml.safe_load(f)
+    with open(path, "r") as fp:
+        raw = yaml.safe_load(fp)
 
     return AppConfig.model_validate(raw)
