@@ -101,7 +101,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
     #             link_path, target, e
     #         )
 
-    def _handle_event_path(self, src: str):
+    def _handle_event_path(self, src: str, event_type: str):
         if not src:
             return
 
@@ -141,18 +141,15 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
         yaml_path = path[:-5] + ".yaml"
 
-        if not os.path.isfile(yaml_path):
+        if event_type == "created":
             action = "new"
-            logger.info(
-                "action=new path=%s",
-                yaml_path
-            )
         else:
             action = "update"
-            logger.info(
-                "action=update path=%s",
-                yaml_path
-            )
+
+        logger.info(
+            "action=%s path=%s event_type=%s",
+            action, yaml_path, event_type
+        )
 
         # try:
         #     self._create_local_symlink(yaml_path)
@@ -205,7 +202,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
         else:
             src = event.src_path
 
-        self._handle_event_path(src)
+        event_type = event.event_type
+
+        self._handle_event_path(src, event_type)
 
     on_modified = on_created = on_moved = _file_event
 
