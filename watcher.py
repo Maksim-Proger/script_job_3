@@ -112,48 +112,64 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
-        # Абсолютный путь события
-        path = os.path.abspath(event.src_path)
-
-        # ----------------------------------------
-        # 1. .save → .yaml через moved (редактор)
-        # ----------------------------------------
+        # Для moved может быть dest_path
         if event.event_type == "moved" and hasattr(event, "dest_path"):
-            src_path = os.path.abspath(event.src_path)
-            dest_path = os.path.abspath(event.dest_path)
+            src = os.path.abspath(event.src_path)
+            dest = os.path.abspath(event.dest_path)
+        else:
+            src = os.path.abspath(event.src_path)
+            dest = None
 
-            if (src_path.endswith(".save") and
-                dest_path == src_path[:-5] + ".yaml" and
-                dest_path.startswith(self.watch_dir + os.sep) and
-                not dest_path.startswith(self.auxiliary_watch_dir + os.sep)):
-
-                if self._debounce(dest_path):
+        # ------------------------------------------------------------------
+        # 1. Переименования .save → .yaml (самый частый кейс)
+        # ------------------------------------------------------------------
+        if dest and src.endswith(".save") and dest.endswith(".yaml"):
+            yaml_path = dest
+            if (yaml_path.startswith(self.watch_dir + os.sep) and
+                    not yaml_path.startswith(self.auxiliary_watch_dir + os.sep)):
+                if self._debounce(yaml_path):
                     return
+                time.sleep(0.08)
+                if os.path.isfile(yaml_path):
+                    logger.info("save_renamed_to_yaml path=%s", yaml_path)
+                    self._enqueue(yaml_path, "update")
+            return
 
-                time.sleep(0.15)
-                if os.path.isfile(dest_path):
-                    logger.info("save_detected_via_rename path=%s", dest_path)
-                    self._enqueue(dest_path, "update")
-                return
+        # ------------------------------------------------------------------
+        # 2. Прямое изменение .save-файла (vim, nano и т.д. пишут прямо в .save)
+        # ------------------------------------------------------------------
+        if src.endswith(".save"):
+            yaml_path = src[:-5] + ".yaml"
+            if (yaml_path.startswith(self.watch_dir + os.sep) and
+                    not yaml_path.startswith(self.auxiliary_watch_dir + os.sep)):
+                if event.event_type in ("modified", "created"):
+                    if self._debounce(yaml_path):
+                        return
+                    time.sleep(0.12)  # чуть больше — vim может ещё писать
+                    if os.path.isfile(yaml_path):  # уже переименован?
+                        logger.info("save_file_modified_and_renamed path=%s", yaml_path)
+                        self._enqueue(yaml_path, "update")
+                    # если .yaml ещё нет — можно подождать чуть дольше, но обычно не нужно
+            return
 
-        # ----------------------------------------
-        # 2. Прямое создание/изменение .yaml
-        # ----------------------------------------
-        if path.endswith(".yaml") and path.startswith(self.watch_dir + os.sep):
-            if path.startswith(self.auxiliary_watch_dir + os.sep):
-                return
-
-            if event.event_type in ("created", "modified"):
-                if self._debounce(path):
-                    return
-                time.sleep(0.05)
-                if os.path.isfile(path):
-                    action = "new" if event.event_type == "created" else "update"
-                    logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
-                    self._enqueue(path, action)
+        # ------------------------------------------------------------------
+        # 3. Редкие случаи: прямое создание/изменение .yaml без .save (скрипты, cp и т.д.)
+        # ------------------------------------------------------------------
+        if src.endswith(".yaml"):
+            yaml_path = src
+            if (yaml_path.startswith(self.watch_dir + os.sep) and
+                    not yaml_path.startswith(self.auxiliary_watch_dir + os.sep)):
+                if event.event_type in ("created", "modified"):
+                    if self._debounce(yaml_path):
+                        return
+                    time.sleep(0.05)
+                    if os.path.isfile(yaml_path):
+                        action = "new" if event.event_type == "created" else "update"
+                        logger.info("direct_yaml_event path=%s event=%s", yaml_path, event.event_type)
+                        self._enqueue(yaml_path, action)
 
     # Привязываем один обработчик на все события
-    on_modified = on_created = on_moved = process
+    on_created = on_modified = on_moved = process
 
     # ----------------------------------------------------------------
     # 3. Обработка удаления
