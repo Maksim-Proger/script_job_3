@@ -64,6 +64,7 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str):
 
         target_relative = os.path.relpath(remote_full_path, start=remote_aux_dir)
 
+        logger.info("action=info path=%s target=%s:%s", action)
         if action == "new_configs":
             try:
                 sftp.remove(remote_link_path)
