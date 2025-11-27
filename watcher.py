@@ -58,11 +58,18 @@ class ConfigChangeHandler(FileSystemEventHandler):
         os.makedirs(self.auxiliary_watch_dir, exist_ok=True)
 
     def _debounce_check(self, path):
+        key = os.path.basename(path)  # <-- Дебаунсим по имени файла, а не по полному пути
         now = time.time()
-        if now - self.last_sync_time.get(path, 0) < self.debounce_seconds:
-            logger.debug("action=debounced path=%s", os.path.basename(path))
+
+        if now - self.last_sync_time.get(key, 0) < self.debounce_seconds:
+            logger.debug(
+                "action=debounced path=%s delta=%.4f",
+                key,
+                now - self.last_sync_time.get(key, 0)
+            )
             return True
-        self.last_sync_time[path] = now
+
+        self.last_sync_time[key] = now
         return False
 
     def _handle_change(self, path, event_type):
@@ -105,9 +112,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
     def _handle_delete(self, path):
         yaml_path = path[:-5] + ".yaml" if path.endswith(".save") else path
-
         logger.info("action=file_deleted path=%s", os.path.basename(yaml_path))
-
         task_queue.put(("delete", yaml_path, self.servers))
 
     def on_created(self, event): self._on_event(event)
@@ -150,3 +155,4 @@ def start_watcher(watch_dir, auxiliary_watch_dir, servers, debounce_seconds, sta
         observer.join()
         task_queue.join()
         logger.info("action=watcher_stopped")
+
