@@ -15,13 +15,17 @@ from api_client import send_api_request
 
 logger = logging.getLogger("watcher")
 
-
+# --------------------------------------------------------------------
+# Структура задачи для очереди
+# --------------------------------------------------------------------
 class SyncTask(NamedTuple):
     action: str        # "new", "update", "delete"
     yaml_path: str
-    server: Any        # объект сервера
+    server: Any
 
-
+# --------------------------------------------------------------------
+# Хендлер с очередью
+# --------------------------------------------------------------------
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self, servers, debounce_seconds: float, watch_dir: str,
                  auxiliary_watch_dir: str, status_check):
@@ -44,6 +48,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
             t.start()
             self.workers.append(t)
 
+    # ----------------------------------------------------------------
+    # Дебаунс, чтобы несколько быстрых изменений не создавали гонку
+    # ----------------------------------------------------------------
     def _debounce(self, yaml_path: str) -> bool:
         now = time.time()
         last = self.last_trigger_time.get(yaml_path, 0)
@@ -52,14 +59,16 @@ class ConfigChangeHandler(FileSystemEventHandler):
         self.last_trigger_time[yaml_path] = now
         return False
 
+    # ----------------------------------------------------------------
+    # Воркер для обработки очереди
+    # ----------------------------------------------------------------
     def _worker_loop(self):
         while True:
             task = self.task_queue.get()
-            if task is None:  # сигнал завершения
+            if task is None:
                 break
 
             action, yaml_path, server = task.action, task.yaml_path, task.server
-
             try:
                 if action == "delete":
                     delete_from_server(yaml_path, server)
@@ -81,6 +90,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
             finally:
                 self.task_queue.task_done()
 
+    # ----------------------------------------------------------------
+    # Кладём задачу в очередь
+    # ----------------------------------------------------------------
     def _enqueue(self, yaml_path: str, action: str):
         if not check_service_status(
                 process_name=self.status_check.process_name,
@@ -93,15 +105,19 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
         logger.info("enqueued action=%s path=%s servers=%d", action, yaml_path, len(self.servers))
 
+    # ----------------------------------------------------------------
+    # Обработка событий
+    # ----------------------------------------------------------------
     def process(self, event):
         if event.is_directory:
             return
 
+        # Абсолютный путь события
         path = os.path.abspath(event.src_path)
 
-        # ------------------------------------------------------------------
-        # 1. Обработка .save → .yaml (редактор)
-        # ------------------------------------------------------------------
+        # ----------------------------------------
+        # 1. .save → .yaml через moved (редактор)
+        # ----------------------------------------
         if event.event_type == "moved" and hasattr(event, "dest_path"):
             src_path = os.path.abspath(event.src_path)
             dest_path = os.path.abspath(event.dest_path)
@@ -120,9 +136,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     self._enqueue(dest_path, "update")
                 return
 
-        # ------------------------------------------------------------------
+        # ----------------------------------------
         # 2. Прямое создание/изменение .yaml
-        # ------------------------------------------------------------------
+        # ----------------------------------------
         if path.endswith(".yaml") and path.startswith(self.watch_dir + os.sep):
             if path.startswith(self.auxiliary_watch_dir + os.sep):
                 return
@@ -132,15 +148,16 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     return
                 time.sleep(0.05)
                 if os.path.isfile(path):
-                    logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
                     action = "new" if event.event_type == "created" else "update"
+                    logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
                     self._enqueue(path, action)
 
+    # Привязываем один обработчик на все события
     on_created = on_modified = on_moved = process
 
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------
     # 3. Обработка удаления
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------
     def on_deleted(self, event):
         if event.is_directory:
             return
@@ -153,7 +170,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not yaml_path or not yaml_path.endswith(".yaml"):
             return
 
-        # Удаляем локальный .yaml, если остался
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
@@ -164,8 +180,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
         logger.info("file_deleted_trigger_sync path=%s", yaml_path)
         self._enqueue(yaml_path, "delete")
 
+    # ----------------------------------------------------------------
+    # Грациозное завершение воркеров
+    # ----------------------------------------------------------------
     def stop(self):
-        """Грациозно завершаем все воркеры и дожидаемся выполнения задач"""
         logger.info("stopping_sync_workers count=%d", len(self.workers))
         for _ in self.workers:
             self.task_queue.put(None)
@@ -175,6 +193,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
         logger.info("all_sync_workers_stopped")
 
 
+# --------------------------------------------------------------------
+# Старт наблюдателя
+# --------------------------------------------------------------------
 def start_watcher(watch_dir: str,
                   auxiliary_watch_dir: str,
                   servers,
@@ -203,9 +224,7 @@ def start_watcher(watch_dir: str,
         logger.info("keyboard_interrupt received, shutting down...")
     finally:
         observer.stop()
-        logger.info("observer_stopped")
         observer.join(timeout=10)
-
         handler.stop()
         logger.info("watcher_fully_stopped")
 
