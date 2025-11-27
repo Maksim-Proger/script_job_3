@@ -11,6 +11,7 @@ from watchdog.observers import Observer
 from api_client import send_api_request
 from status import check_service_status
 from sync import sync_to_server
+from sync import delete_from_server
 
 logger = logging.getLogger("watcher")
 
@@ -22,11 +23,10 @@ def worker():
         try:
             for server in servers:
                 try:
-                    logger.info(
-                        "action=action",
-                        action
-                    )
-                    sync_to_server(yaml_path, server)
+                    if action == "delete":
+                        delete_from_server(yaml_path, server)
+                    else:
+                        sync_to_server(yaml_path, server)
                 except Exception as e:
                     logger.error(
                         "action=sync path=%s target=%s error=%s",
