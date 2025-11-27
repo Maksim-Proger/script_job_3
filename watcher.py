@@ -13,11 +13,13 @@ from api_client import send_api_request
 
 logger = logging.getLogger("watcher")
 
-# Очередь для всех задач
+# Очередь для задач
 task_queue = Queue()
 
-def wait_for_file(path, timeout=2.0, interval=0.05):
-    """Ждём пока файл появится и станет доступным"""
+NUM_WORKERS = 4  # количество воркеров
+
+def wait_for_file_ready(path, timeout=2.0, interval=0.05):
+    """Ждём, пока файл появится и станет ненулевого размера"""
     start = time.time()
     while time.time() - start < timeout:
         if os.path.exists(path) and os.path.getsize(path) > 0:
@@ -37,9 +39,14 @@ def worker():
         for server in servers:
             try:
                 if task_type == "sync":
+                    # ждем пока файл готов
+                    if not wait_for_file_ready(yaml_path):
+                        logger.warning("action=file_not_ready path=%s", yaml_path)
+                        continue
                     sync_to_server(yaml_path, server)
                 else:
                     delete_from_server(yaml_path, server)
+
                 send_api_request(server.host, server.api_port, action, yaml_path)
             except Exception as e:
                 logger.error(
@@ -48,9 +55,7 @@ def worker():
                 )
         task_queue.task_done()
 
-
-# Запускаем воркеры
-NUM_WORKERS = 4
+# Запуск воркеров
 for _ in range(NUM_WORKERS):
     Thread(target=worker, daemon=True).start()
 
@@ -79,7 +84,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
             return
 
         path = os.path.abspath(src)
-
         if path.startswith(self.auxiliary_watch_dir + os.sep):
             return
         if not path.startswith(self.watch_dir + os.sep):
@@ -91,18 +95,11 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if self._debounce_check(path):
             return
 
-        # Ждём пока файл готов
-        if not wait_for_file(path):
-            logger.warning("action=file_not_ready path=%s", path)
-            return
-
         yaml_path = path[:-5] + ".yaml"
+
         if event_type in ("created", "modified", "moved"):
             action = "new" if event_type == "created" else "update"
             task_type = "sync"
-        elif event_type == "deleted":
-            action = "delete"
-            task_type = "delete"
         else:
             return
 
@@ -113,7 +110,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
             logger.error("action=service_check_failed")
             return
 
-        # Ставим задачу в очередь
         task_queue.put((action, yaml_path, self.servers, task_type))
         logger.info("action=task_queued path=%s type=%s", yaml_path, task_type)
 
@@ -133,7 +129,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         else:
             yaml_path = path
 
-        # Удаляем сам файл
+        # Удаляем локальный YAML если существует
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
@@ -148,11 +144,7 @@ def start_watcher(watch_dir, auxiliary_watch_dir, servers, debounce_seconds, sta
     logger.info("action=start_watcher path=%s", watch_dir)
 
     event_handler = ConfigChangeHandler(
-        servers,
-        debounce_seconds,
-        watch_dir,
-        auxiliary_watch_dir,
-        status_check
+        servers, debounce_seconds, watch_dir, auxiliary_watch_dir, status_check
     )
     observer = Observer()
     observer.schedule(event_handler, path=watch_dir, recursive=True)
@@ -167,7 +159,7 @@ def start_watcher(watch_dir, auxiliary_watch_dir, servers, debounce_seconds, sta
     finally:
         observer.stop()
         observer.join()
-        # останавливаем воркеров
+        # остановка воркеров
         for _ in range(NUM_WORKERS):
             task_queue.put(None)
         task_queue.join()
