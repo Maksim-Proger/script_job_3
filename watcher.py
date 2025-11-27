@@ -145,7 +145,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 if event.event_type in ("modified", "created"):
                     if self._debounce(yaml_path):
                         return
-                    time.sleep(0.12)  # чуть больше — vim может ещё писать
+                    time.sleep(0.15)  # чуть больше — vim может ещё писать
                     if os.path.isfile(yaml_path):  # уже переименован?
                         logger.info("save_file_modified_and_renamed path=%s", yaml_path)
                         self._enqueue(yaml_path, "update")
