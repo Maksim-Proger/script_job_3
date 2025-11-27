@@ -112,6 +112,8 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
+        logger.info("ТИП СОБЫТИЯ", event)
+
         # Для moved может быть dest_path
         if event.event_type == "moved" and hasattr(event, "dest_path"):
             src = os.path.abspath(event.src_path)
@@ -234,8 +236,7 @@ def start_watcher(watch_dir: str,
     logger.info("watcher_started successfully")
 
     try:
-        while True:
-            time.sleep(1)
+        observer.join()
     except KeyboardInterrupt:
         logger.info("keyboard_interrupt received, shutting down...")
     finally:
