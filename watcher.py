@@ -39,10 +39,6 @@ def worker():
         for server in servers:
             try:
                 if task_type == "sync":
-                    # ждем пока файл готов
-                    if not wait_for_file_ready(yaml_path):
-                        logger.warning("action=file_not_ready path=%s", yaml_path)
-                        continue
                     sync_to_server(yaml_path, server)
                 else:
                     delete_from_server(yaml_path, server)
@@ -98,6 +94,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
         yaml_path = path[:-5] + ".yaml"
 
         if event_type in ("created", "modified", "moved"):
+            # Ждём, пока файл реально появится и будет готов
+            if not wait_for_file_ready(path):
+                logger.warning("action=file_not_ready path=%s", path)
+                return
             action = "new" if event_type == "created" else "update"
             task_type = "sync"
         else:
@@ -110,6 +110,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
             logger.error("action=service_check_failed")
             return
 
+        # ставим задачу в очередь
         task_queue.put((action, yaml_path, self.servers, task_type))
         logger.info("action=task_queued path=%s type=%s", yaml_path, task_type)
 
