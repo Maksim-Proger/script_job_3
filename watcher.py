@@ -16,11 +16,10 @@ from api_client import send_api_request
 logger = logging.getLogger("watcher")
 logger.setLevel(logging.INFO)
 
-
 class SyncTask(NamedTuple):
-    action: str      # "update", "delete" (new можно не слать отдельно — update покрывает)
+    action: str
     yaml_path: str
-    server: Any      # объект сервера с полями host, api_port и т.д.
+    server: Any
 
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self, servers, debounce_seconds: float, watch_dir: str,
@@ -33,12 +32,11 @@ class ConfigChangeHandler(FileSystemEventHandler):
         self.status_check = status_check
 
         self.task_queue: Queue[SyncTask | None] = Queue()
-        self.last_trigger = {}  # дебаунс по финальному .yaml пути
+        self.last_save_trigger = {}  # ключ: путь к .yaml (без .save)
         self.workers = []
 
         os.makedirs(self.auxiliary_watch_dir, exist_ok=True)
 
-        # Запускаем 4 воркера (можно менять)
         for i in range(4):
             t = Thread(target=self._worker_loop, daemon=True, name=f"SyncWorker-{i+1}")
             t.start()
@@ -46,10 +44,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
     def _debounce(self, yaml_path: str) -> bool:
         now = time.time()
-        last = self.last_trigger.get(yaml_path, 0)
+        last = self.last_save_trigger.get(yaml_path, 0)
         if now - last < self.debounce_seconds:
             return True
-        self.last_trigger[yaml_path] = now
+        self.last_save_trigger[yaml_path] = now
         return False
 
     def _worker_loop(self):
@@ -57,117 +55,80 @@ class ConfigChangeHandler(FileSystemEventHandler):
             task = self.task_queue.get()
             if task is None:
                 break
-
             action, yaml_path, server = task.action, task.yaml_path, task.server
-
             try:
                 if action == "delete":
                     delete_from_server(yaml_path, server)
                 else:
                     sync_to_server(yaml_path, server)
-
                 send_api_request(server.host, server.api_port, action, yaml_path)
-
-                logger.info(
-                    "sync_ok action=%s file=%s server=%s",
-                    action, os.path.basename(yaml_path), server.host
-                )
+                logger.info("sync_ok action=%s file=%s server=%s", action, os.path.basename(yaml_path), server.host)
             except Exception as e:
-                logger.error(
-                    "sync_error action=%s file=%s server=%s error=%s",
-                    action, os.path.basename(yaml_path), server.host, e,
-                    exc_info=True
-                )
+                logger.error("sync_failed action=%s file=%s server=%s error=%s", action, os.path.basename(yaml_path), server.host, e, exc_info=True)
             finally:
                 self.task_queue.task_done()
 
-    def _enqueue(self, yaml_path: str, action: str):
-        if not check_service_status(
-                process_name=self.status_check.process_name,
-                min_uptime=self.status_check.min_uptime_seconds):
-            logger.warning("service_not_ready skip_sync file=%s", os.path.basename(yaml_path))
+    def _enqueue(self, yaml_path: str, action: str = "update"):
+        if not check_service_status(self.status_check.process_name, self.status_check.min_uptime_seconds):
+            logger.warning("service_not_ready skip file=%s", os.path.basename(yaml_path))
+            return
+        for server in self.servers:
+            self.task_queue.put(SyncTask(action, yaml_path, server))
+        logger.info("enqueued action=%s file=%s", action, os.path.basename(yaml_path))
+
+    def _trigger_from_save_file(self, save_path: str):
+        yaml_path = save_path[:-5] + ".yaml"  # file.yaml.save → file.yaml
+        if not yaml_path.startswith(self.watch_dir + os.sep):
+            return
+        if yaml_path.startswith(self.auxiliary_watch_dir + os.sep):
             return
 
-        for server in self.servers:
-            self.task_queue.put(SyncTask(action=action, yaml_path=yaml_path, server=server))
+        if self._debounce(yaml_path):
+            return
 
-        logger.info("enqueued action=%s file=%s servers=%d", action, os.path.basename(yaml_path), len(self.servers))
+        # Ждём, пока редактор закончит замену
+        for _ in range(8):
+            time.sleep(0.08)
+            if os.path.isfile(yaml_path):
+                logger.info("save_completed file=%s (via .save trigger)", os.path.basename(yaml_path))
+                self._enqueue(yaml_path, "update")
+                return
+        logger.warning("save_timeout file=%s not appeared after .save", os.path.basename(yaml_path))
 
-    def process_event(self, event):
+    # === ГЛАВНОЕ: ловим ТОЛЬКО изменение .save файла ===
+    def on_modified(self, event):
         if event.is_directory:
             return
-
-        yaml_path = None
-        trigger_source = "unknown"
-
-        # ------------------------------------------------------------------
-        # 1. Переименование .save → .yaml (Vim, Nano, старые редакторы)
-        # ------------------------------------------------------------------
-        if event.event_type == "moved" and hasattr(event, "dest_path"):
-            src = os.path.abspath(event.src_path)
-            dest = os.path.abspath(event.dest_path)
-
-            if (src.endswith(".save") and
-                dest == src[:-5] + ".yaml" and
-                dest.startswith(self.watch_dir + os.sep) and
-                not dest.startswith(self.auxiliary_watch_dir + os.sep)):
-
-                yaml_path = dest
-                trigger_source = "rename_.save_to_.yaml"
-
-        # ------------------------------------------------------------------
-        # 2. Создание .yaml файла (VS Code, PyCharm — через os.replace)
-        # ------------------------------------------------------------------
-        elif event.event_type == "created":
-            path = os.path.abspath(event.src_path)
-            if (path.endswith(".yaml") and
-                path.startswith(self.watch_dir + os.sep) and
-                not path.startswith(self.auxiliary_watch_dir + os.sep)):
-
-                yaml_path = path
-                trigger_source = "created_.yaml"
-
-        # ------------------------------------------------------------------
-        # 3. Прямое изменение .yaml (редко, но на всякий случай)
-        # ------------------------------------------------------------------
-        elif event.event_type == "modified":
-            path = os.path.abspath(event.src_path)
-            if (path.endswith(".yaml") and
-                path.startswith(self.watch_dir + os.sep) and
-                not path.startswith(self.auxiliary_watch_dir + os.sep)):
-
-                yaml_path = path
-                trigger_source = "modified_.yaml"
-
-        # ------------------------------------------------------------------
-        # Если определили валидный .yaml — обрабатываем
-        # ------------------------------------------------------------------
-        if yaml_path and os.path.isfile(yaml_path):
-            if self._debounce(yaml_path):
-                logger.debug("debounced file=%s", os.path.basename(yaml_path))
+        path = os.path.abspath(event.src_path)
+        if path.endswith(".save") and path.startswith(self.watch_dir + os.sep):
+            if path.startswith(self.auxiliary_watch_dir + os.sep):
                 return
+            logger.debug("save_file_modified path=%s", path)
+            Thread(target=self._trigger_from_save_file, args=(path,), daemon=True).start()
 
-            time.sleep(0.08)  # даём файловой системе "устаканиться"
+    # === Создание нового файла .yaml (например, через git, cp, или первый раз без .save) ===
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        path = os.path.abspath(event.src_path)
+        if path.endswith(".yaml") and path.startswith(self.watch_dir + os.sep):
+            if path.startswith(self.auxiliary_watch_dir + os.sep):
+                return
+            if self._debounce(path):
+                return
+            time.sleep(0.1)
+            if os.path.isfile(path):
+                logger.info("new_file_created file=%s", os.path.basename(path))
+                self._enqueue(path, "update")
 
-            if os.path.isfile(yaml_path):
-                logger.info("triggered_sync file=%s via=%s", os.path.basename(yaml_path), trigger_source)
-                self._enqueue(yaml_path, "update")
-
-    # Все события идут через один обработчик
-    on_created = on_modified = on_moved = process_event
-
-    # ------------------------------------------------------------------
-    # Удаление
-    # ------------------------------------------------------------------
+    # === Удаление ===
     def on_deleted(self, event):
         if event.is_directory:
             return
-
         path = os.path.abspath(event.src_path)
         if not path.startswith(self.watch_dir + os.sep):
             return
 
-        # Определяем путь к .yaml
         if path.endswith(".yaml"):
             yaml_path = path
         elif path.endswith(".save"):
@@ -175,68 +136,45 @@ class ConfigChangeHandler(FileSystemEventHandler):
         else:
             return
 
-        # Удаляем локальный .yaml если остался
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
                 logger.info("local_yaml_removed file=%s", os.path.basename(yaml_path))
-            except OSError as e:
-                logger.error("failed_remove_local_yaml file=%s error=%s", os.path.basename(yaml_path), e)
+            except OSError:
+                pass
 
-        logger.info("file_deleted_trigger_sync file=%s", os.path.basename(yaml_path))
+        logger.info("file_deleted file=%s", os.path.basename(yaml_path))
         self._enqueue(yaml_path, "delete")
 
-    # ------------------------------------------------------------------
-    # Graceful shutdown
-    # ------------------------------------------------------------------
     def stop(self):
-        logger.info("stopping_sync_workers count=%d", len(self.workers))
         for _ in self.workers:
             self.task_queue.put(None)
         for t in self.workers:
             t.join(timeout=10)
         self.task_queue.join()
-        logger.info("all_workers_stopped queue_empty=%s", self.task_queue.empty())
+        logger.info("all_workers_stopped")
 
-# ========================================================================
-# Запуск вотчера
-# ========================================================================
 def start_watcher(watch_dir: str,
                   auxiliary_watch_dir: str,
                   servers,
-                  debounce_seconds: float = 0.7,
+                  debounce_seconds: float = 0.9,
                   status_check=None):
-    logger.info("=== STARTING CONFIG WATCHER ===")
-    logger.info("watch_dir=%s", watch_dir)
-    logger.info("servers_count=%d", len(servers))
-
-    handler = ConfigChangeHandler(
-        servers=servers,
-        debounce_seconds=debounce_seconds,
-        watch_dir=watch_dir,
-        auxiliary_watch_dir=auxiliary_watch_dir,
-        status_check=status_check
-    )
-
+    logger.info("=== CONFIG WATCHER STARTED ===")
+    handler = ConfigChangeHandler(servers, debounce_seconds, watch_dir, auxiliary_watch_dir, status_check)
     observer = Observer()
     observer.schedule(handler, watch_dir, recursive=True)
     observer.start()
-
-    logger.info("watcher_started_observer_running")
+    logger.info("watching directory=%s", watch_dir)
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("keyboard_interrupt shutting_down...")
+        logger.info("shutting down...")
     finally:
-        logger.info("stopping_observer...")
         observer.stop()
-        observer.join(timeout=10)
-
-        logger.info("stopping_sync_workers...")
+        observer.join()
         handler.stop()
-
         logger.info("=== WATCHER STOPPED ===")
 
 
