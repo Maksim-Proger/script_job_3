@@ -20,14 +20,6 @@ class SyncTask(NamedTuple):
     yaml_path: str
     server: Any        # объект сервера
 
-def wait_for_file_ready(path, timeout=0.2, interval=0.02):
-    start = time.time()
-    while time.time() - start < timeout:
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            return True
-        time.sleep(interval)
-    return False
-
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self, servers, debounce_seconds: float, watch_dir: str,
                  auxiliary_watch_dir: str, status_check):
@@ -39,7 +31,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         self.status_check = status_check
 
         self.task_queue: Queue[SyncTask | None] = Queue()
-        self.last_trigger_time = {}  # дебаунс
+        self.last_trigger_time = {}  # для дебаунса по yaml
         self.workers = []
 
         os.makedirs(self.auxiliary_watch_dir, exist_ok=True)
@@ -61,7 +53,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
     def _worker_loop(self):
         while True:
             task = self.task_queue.get()
-            if task is None:
+            if task is None:  # сигнал завершения
                 break
 
             action, yaml_path, server = task.action, task.yaml_path, task.server
@@ -103,8 +95,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if event.is_directory:
             return
 
+        path = os.path.abspath(event.src_path)
+
         # ------------------------------------------------------------------
-        # 1. Случай .save → .yaml (редактор)
+        # 1. Обработка .save → .yaml (редактор)
         # ------------------------------------------------------------------
         if event.event_type == "moved" and hasattr(event, "dest_path"):
             src_path = os.path.abspath(event.src_path)
@@ -119,7 +113,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     return
 
                 time.sleep(0.08)
-
                 if os.path.isfile(dest_path):
                     logger.info("save_detected_via_rename path=%s", dest_path)
                     self._enqueue(dest_path, "update")
@@ -128,34 +121,29 @@ class ConfigChangeHandler(FileSystemEventHandler):
         # ------------------------------------------------------------------
         # 2. Прямое создание/изменение .yaml
         # ------------------------------------------------------------------
-        path = os.path.abspath(event.src_path)
         if path.endswith(".yaml") and path.startswith(self.watch_dir + os.sep):
             if path.startswith(self.auxiliary_watch_dir + os.sep):
                 return
 
             if event.event_type in ("created", "modified"):
-                if not wait_for_file_ready(path):
-                    logger.warning("file_not_ready path=%s", path)
-                    return
-
                 if self._debounce(path):
                     return
-
-                action = "new" if event.event_type == "created" else "update"
-                logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
-                self._enqueue(path, action)
+                time.sleep(0.05)
+                if os.path.isfile(path):
+                    logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
+                    action = "new" if event.event_type == "created" else "update"
+                    self._enqueue(path, action)
 
     on_created = on_modified = on_moved = process
 
     # ------------------------------------------------------------------
-    # Обработка удаления
+    # 3. Обработка удаления
     # ------------------------------------------------------------------
     def on_deleted(self, event):
         if event.is_directory:
             return
 
         path = os.path.abspath(event.src_path)
-
         if not path.startswith(self.watch_dir + os.sep):
             return
 
@@ -163,6 +151,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not yaml_path or not yaml_path.endswith(".yaml"):
             return
 
+        # Удаляем локальный .yaml, если остался
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
@@ -174,6 +163,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         self._enqueue(yaml_path, "delete")
 
     def stop(self):
+        """Грациозно завершаем все воркеры и дожидаемся выполнения задач"""
         logger.info("stopping_sync_workers count=%d", len(self.workers))
         for _ in self.workers:
             self.task_queue.put(None)
@@ -215,6 +205,7 @@ def start_watcher(watch_dir: str,
 
         handler.stop()
         logger.info("watcher_fully_stopped")
+
 
 
 
