@@ -39,6 +39,14 @@ def worker():
         finally:
             task_queue.task_done()
 
+def wait_for_file(path, timeout=2.0, interval=0.05):
+    """Ждём пока файл станет доступен"""
+    start = time.time()
+    while time.time() - start < timeout:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            return True
+        time.sleep(interval)
+    return False
 
 # Запуск воркеров
 for _ in range(NUM_WORKERS):
@@ -122,6 +130,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
         filename = os.path.basename(yaml_path)
         logger.info("action=change_detected path=%s triggered_by=.save", filename)
+
+        if not wait_for_file(path):
+            logger.warning("action=file_not_ready path=%s", path)
+            return
 
         # Кладём задачу в очередь
         task_queue.put((action, yaml_path, self.servers))
