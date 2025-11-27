@@ -64,38 +64,37 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str):
 
         target_relative = os.path.relpath(remote_full_path, start=remote_aux_dir)
 
-        logger.info("action=info path=%s target=%s:%s", action)
-        if action == "new_configs":
+        if action == "new":
             try:
                 sftp.remove(remote_link_path)
                 logger.debug(
                     "action=remove path=%s target=%s:%s",
                     remote_link_path, server.host, server.ssh_port
                 )
-
-                try:
-                    sftp.symlink(target_relative, remote_link_path)
-                    logger.info(
-                        "action=symlink path=%s target=%s:%s",
-                        remote_link_path, server.host, target_relative
-                    )
-                except (IOError, AttributeError) as e:
-                    logger.debug("sftp.symlink failed (%s), trying ssh ln -s", e)
-                    cmd = f"ln -sf -- {shlex.quote(target_relative)} {shlex.quote(remote_link_path)}"
-                    stdin, stdout, stderr = ssh.exec_command(cmd)
-                    err = stderr.read().decode().strip()
-                    if err:
-                        logger.warning(
-                            "action=symlink_via_ssh path=%s target=%s:%s error=%s",
-                            remote_link_path, server.host, target_relative, err
-                        )
-                    else:
-                        logger.info(
-                            "action=symlink_via_ssh path=%s target=%s:%s",
-                            remote_link_path, server.host, target_relative
-                        )
             except IOError:
                 pass
+
+            try:
+                sftp.symlink(target_relative, remote_link_path)
+                logger.info(
+                    "action=symlink path=%s target=%s:%s",
+                    remote_link_path, server.host, target_relative
+                )
+            except (IOError, AttributeError) as e:
+                logger.debug("sftp.symlink failed (%s), trying ssh ln -s", e)
+                cmd = f"ln -sf -- {shlex.quote(target_relative)} {shlex.quote(remote_link_path)}"
+                stdin, stdout, stderr = ssh.exec_command(cmd)
+                err = stderr.read().decode().strip()
+                if err:
+                    logger.warning(
+                        "action=symlink_via_ssh path=%s target=%s:%s error=%s",
+                        remote_link_path, server.host, target_relative, err
+                    )
+                else:
+                    logger.info(
+                        "action=symlink_via_ssh path=%s target=%s:%s",
+                        remote_link_path, server.host, target_relative
+                    )
 
         else:
             logger.debug(
