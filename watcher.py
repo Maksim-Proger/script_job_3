@@ -162,60 +162,54 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
     on_modified = on_created = on_moved = _file_event
 
-    # def _file_deleted(self, event):
-    #     logger.info(
-    #         "action=file_deleted_event_received event=%s",
-    #         event
-    #     )
-    #     if event.is_directory:
-    #         return
-    #
-    #     path = os.path.abspath(event.src_path)
-    #     logger.info(
-    #         "action=file_deleted_path path=%s",
-    #         path
-    #     )
-    #
-    #     if not path.startswith(self.watch_dir + os.sep):
-    #         logger.info(
-    #             "action=delete_skip path=%s reason=outside_watch_dir",
-    #             path
-    #         )
-    #         return
-    #
-    #     filename = os.path.basename(path)
-    #     logger.info(
-    #         "action=file_deleted path=%s",
-    #         filename
-    #     )
-    #
-    #     if path.endswith(".save"):
-    #         yaml_path = path[:-5] + ".yaml"
-    #     else:
-    #         yaml_path = path
-    #
-    #     if os.path.exists(yaml_path):
-    #         try:
-    #             os.remove(yaml_path)
-    #             logger.info(
-    #                 "action=deleted_master_yaml path=%s",
-    #                 yaml_path
-    #             )
-    #         except OSError as e:
-    #             logger.error(
-    #                 "action=delete_master_yaml_failed path=%s error=%s",
-    #                 yaml_path, e
-    #             )
-    #
-    #     for server in self.servers:
-    #         logger.info(
-    #             "action=submit_delete path=%s target=%s",
-    #             yaml_path, server.host
-    #         )
-    #         self.executor.submit(delete_from_server, yaml_path, server)
-    #         self.executor.submit(send_api_request, server.host, server.api_port, "delete", yaml_path)
+    def _file_deleted(self, event):
+        logger.info(
+            "action=file_deleted_event_received event=%s",
+            event
+        )
+        if event.is_directory:
+            return
 
-    # on_deleted = _file_deleted
+        path = os.path.abspath(event.src_path)
+        logger.info(
+            "action=file_deleted_path path=%s",
+            path
+        )
+
+        if not path.startswith(self.watch_dir + os.sep):
+            logger.info(
+                "action=delete_skip path=%s reason=outside_watch_dir",
+                path
+            )
+            return
+
+        filename = os.path.basename(path)
+        logger.info(
+            "action=file_deleted path=%s",
+            filename
+        )
+
+        if path.endswith(".save"):
+            yaml_path = path[:-5] + ".yaml"
+        else:
+            yaml_path = path
+
+        if os.path.exists(yaml_path):
+            try:
+                os.remove(yaml_path)
+                logger.info(
+                    "action=deleted_master_yaml path=%s",
+                    yaml_path
+                )
+            except OSError as e:
+                logger.error(
+                    "action=delete_master_yaml_failed path=%s error=%s",
+                    yaml_path, e
+                )
+
+        task_queue.put(("delete", yaml_path, self.servers))
+
+    on_deleted = _file_deleted
 
 def start_watcher(watch_dir: str,
                   auxiliary_watch_dir: str,
