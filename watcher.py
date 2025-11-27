@@ -12,41 +12,41 @@ from sync import delete_from_server
 from api_client import send_api_request
 
 logger = logging.getLogger("watcher")
+NUM_WORKERS = 2  # количество воркеров
+
+# Очередь задач
 task_queue = Queue()
 
 def worker():
     while True:
-        action, yaml_path, servers = task_queue.get()
+        task = task_queue.get()
+        if task is None:
+            task_queue.task_done()
+            break
+        action, yaml_path, servers = task
         try:
-            filename = os.path.basename(yaml_path)
-            logger.info("action=worker_start file=%s action=%s", filename, action)
-
             for server in servers:
-                try:
-                    if action in ("new", "update"):
-                        sync_to_server(yaml_path, server)
-                        send_api_request(server.host, server.api_port, action, yaml_path)
-                    elif action == "delete":
-                        delete_from_server(yaml_path, server)
-                        send_api_request(server.host, server.api_port, action, yaml_path)
-                except Exception as e:
-                    logger.error(
-                        "action=worker_error server=%s file=%s error=%s",
-                        server.host, filename, e, exc_info=True
-                    )
-
-            logger.info("action=worker_done file=%s", filename)
-
+                if action == "delete":
+                    delete_from_server(yaml_path, server)
+                else:
+                    ConfigChangeHandler._sync_file(yaml_path, server)
+                send_api_request(server.host, server.api_port, action, yaml_path)
+        except Exception as e:
+            logger.exception(
+                "worker_error action=%s path=%s error=%s",
+                action, yaml_path, e
+            )
         finally:
             task_queue.task_done()
 
-def start_workers(num_workers: int = 2):
-    for _ in range(num_workers):
-        t = Thread(target=worker, daemon=True)
-        t.start()
+
+# Запуск воркеров
+for _ in range(NUM_WORKERS):
+    Thread(target=worker, daemon=True).start()
+
 
 class ConfigChangeHandler(FileSystemEventHandler):
-    def __init__(self, servers, debounce_seconds, watch_dir, auxiliary_watch_dir, status_check):
+    def __init__(self, servers, debounce_seconds: float, watch_dir: str, auxiliary_watch_dir: str, status_check):
         super().__init__()
         self.servers = servers
         self.debounce_seconds = debounce_seconds
@@ -58,28 +58,39 @@ class ConfigChangeHandler(FileSystemEventHandler):
         os.makedirs(self.auxiliary_watch_dir, exist_ok=True)
 
     def _debounce_check(self, path):
-        key = os.path.basename(path)  # <-- Дебаунсим по имени файла, а не по полному пути
         now = time.time()
-
-        if now - self.last_sync_time.get(key, 0) < self.debounce_seconds:
-            logger.debug(
-                "action=debounced path=%s delta=%.4f",
-                key,
-                now - self.last_sync_time.get(key, 0)
-            )
+        if now - self.last_sync_time.get(path, 0) < self.debounce_seconds:
+            logger.debug("action=debounced path=%s", os.path.basename(path))
             return True
-
-        self.last_sync_time[key] = now
+        self.last_sync_time[path] = now
         return False
 
-    def _handle_change(self, path, event_type):
+    @staticmethod
+    def _sync_file(local_file, server):
+        try:
+            sync_to_server(local_file, server)
+        except Exception as e:
+            logger.error(
+                "action=sync path=%s target=%s:%s error=%s",
+                local_file, server.host, getattr(server, "ssh_port", "<no-port>"), e, exc_info=True
+            )
+
+    def _handle_event_path(self, src: str, event_type: str):
+        if not src:
+            return
+
+        path = os.path.abspath(src)
+
         if not path.endswith(".save"):
+            logger.debug("action=skip path=%s reason=not_save", path)
             return
 
         if not path.startswith(self.watch_dir + os.sep):
+            logger.debug("action=skip path=%s reason=outside_watch_dir", path)
             return
 
         if path.startswith(self.auxiliary_watch_dir + os.sep):
+            logger.debug("action=skip path=%s reason=inside_aux_dir", path)
             return
 
         if os.path.isdir(path):
@@ -94,65 +105,76 @@ class ConfigChangeHandler(FileSystemEventHandler):
             return
 
         yaml_path = path[:-5] + ".yaml"
-        filename = os.path.basename(yaml_path)
 
-        action = "new" if event_type == "created" else "update"
+        if event_type == "created":
+            action = "new"
+        elif event_type == "modified" or event_type == "moved":
+            action = "update"
+        else:
+            return
 
-        logger.info("action=%s path=%s event_type=%s", action, filename, event_type)
+        logger.info("action=%s path=%s event_type=%s", action, yaml_path, event_type)
 
-        if not check_service_status(
-                process_name=self.status_check.process_name,
-                min_uptime=self.status_check.min_uptime_seconds):
+        if not check_service_status(process_name=self.status_check.process_name,
+                                    min_uptime=self.status_check.min_uptime_seconds):
             logger.error("action=service_check_failed")
             return
 
-        logger.info("action=enqueue path=%s", filename)
+        filename = os.path.basename(yaml_path)
+        logger.info("action=change_detected path=%s triggered_by=.save", filename)
 
+        # Кладём задачу в очередь
         task_queue.put((action, yaml_path, self.servers))
 
-    def _handle_delete(self, path):
+    def _file_event(self, event):
+        if event.is_directory:
+            return
+        src = getattr(event, "dest_path", getattr(event, "src_path", None))
+        event_type = event.event_type
+        self._handle_event_path(src, event_type)
+
+    on_modified = on_created = on_moved = _file_event
+
+    def _file_deleted(self, event):
+        if event.is_directory:
+            return
+        path = os.path.abspath(event.src_path)
+        if not path.startswith(self.watch_dir + os.sep):
+            return
         yaml_path = path[:-5] + ".yaml" if path.endswith(".save") else path
-        logger.info("action=file_deleted path=%s", os.path.basename(yaml_path))
+        # удаляем локально
+        if os.path.exists(yaml_path):
+            try:
+                os.remove(yaml_path)
+                logger.info("action=deleted_master_yaml path=%s", yaml_path)
+            except OSError as e:
+                logger.error("action=delete_master_yaml_failed path=%s error=%s", yaml_path, e)
+        # кладём удаление в очередь
         task_queue.put(("delete", yaml_path, self.servers))
 
-    def on_created(self, event): self._on_event(event)
-    def on_modified(self, event): self._on_event(event)
-    def on_moved(self, event):    self._on_event(event)
-    def on_deleted(self, event):  self._on_delete(event)
+    on_deleted = _file_deleted
 
-    def _on_event(self, event):
-        if event.is_directory:
-            return
-        path = getattr(event, "dest_path", event.src_path)
-        self._handle_change(os.path.abspath(path), event.event_type)
 
-    def _on_delete(self, event):
-        if event.is_directory:
-            return
-        self._handle_delete(os.path.abspath(event.src_path))
+def start_watcher(watch_dir: str, auxiliary_watch_dir: str, servers, debounce_seconds: float, status_check):
+    logger.info("action=start_watcher path=%s", watch_dir)
 
-def start_watcher(watch_dir, auxiliary_watch_dir, servers, debounce_seconds, status_check):
-    logger.info("action=start_watcher dir=%s", watch_dir)
-
-    start_workers()  # запускаем очередь ВАЖНО: раньше observer
-
-    event_handler = ConfigChangeHandler(
-        servers, debounce_seconds, watch_dir, auxiliary_watch_dir, status_check
-    )
-
+    event_handler = ConfigChangeHandler(servers, debounce_seconds, watch_dir, auxiliary_watch_dir, status_check)
     observer = Observer()
-    observer.schedule(event_handler, watch_dir, recursive=True)
+    observer.schedule(event_handler, path=watch_dir, recursive=True)
     observer.start()
-
     logger.info("action=observer_started thread_alive=%s", observer.is_alive())
 
     try:
-        observer.join()
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
         logger.info("action=watcher_keyboard_interrupt")
-        observer.stop()
     finally:
+        observer.stop()
         observer.join()
+        # остановка воркеров
+        for _ in range(NUM_WORKERS):
+            task_queue.put(None)
         task_queue.join()
         logger.info("action=watcher_stopped")
 
