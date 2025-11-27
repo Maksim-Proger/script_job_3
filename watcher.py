@@ -130,7 +130,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 if self._debounce(dest_path):
                     return
 
-                time.sleep(0.08)
+                time.sleep(0.15)
                 if os.path.isfile(dest_path):
                     logger.info("save_detected_via_rename path=%s", dest_path)
                     self._enqueue(dest_path, "update")
