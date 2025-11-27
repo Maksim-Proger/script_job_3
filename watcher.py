@@ -4,7 +4,7 @@ import logging
 from queue import Queue
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
-from typing import NamedTuple
+from typing import NamedTuple, Any
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -16,11 +16,10 @@ from api_client import send_api_request
 logger = logging.getLogger("watcher")
 
 
-# Описание одной задачи
 class SyncTask(NamedTuple):
-    action: str  # "new", "update", "delete"
+    action: str        # "new", "update", "delete"
     yaml_path: str
-    server: object  # твой объект сервера
+    server: Any        # твой объект сервера (с полями host, api_port и т.д.)
 
 
 class ConfigChangeHandler(FileSystemEventHandler):
@@ -33,155 +32,162 @@ class ConfigChangeHandler(FileSystemEventHandler):
         self.auxiliary_watch_dir = os.path.abspath(auxiliary_watch_dir)
         self.status_check = status_check
 
-        # Очередь задач — одна на весь обработчик
-        self.task_queue = Queue()
-        self.last_sync_time = {}
+        self.task_queue: Queue[SyncTask | None] = Queue()
+        self.last_trigger_time = {}  # для дебаунса по финальному .yaml
+        self.workers = []
 
         os.makedirs(self.auxiliary_watch_dir, exist_ok=True)
 
-        # Запускаем несколько воркеров, которые будут брать задачи из очереди
-        self.workers = []
-        for i in range(4):  # можно 3–6 в зависимости от нагрузки
-            t = Thread(target=self._worker_loop, daemon=True, name=f"SyncWorker-{i}")
+        # Запускаем воркеры
+        for i in range(4):
+            t = Thread(target=self._worker_loop, daemon=True, name=f"SyncWorker-{i+1}")
             t.start()
             self.workers.append(t)
 
-    def _worker_loop(self):
-        """Один воркер — бесконечно берёт задачи из очереди и выполняет их"""
-        while True:
-            try:
-                task = self.task_queue.get()
-                if task is None:  # сигнал завершения
-                    break
-
-                action, yaml_path, server = task.action, task.yaml_path, task.server
-
-                try:
-                    if action == "delete":
-                        delete_from_server(yaml_path, server)
-                    else:
-                        sync_to_server(yaml_path, server)
-
-                    # API-вызов всегда после успешной синхронизации файла
-                    send_api_request(server.host, server.api_port, action, yaml_path)
-
-                    logger.info(
-                        "action=%s_completed path=%s server=%s",
-                        action, yaml_path, server.host
-                    )
-                except Exception as e:
-                    logger.error(
-                        "action=%s_failed path=%s server=%s error=%s",
-                        action, yaml_path, server.host, e, exc_info=True
-                    )
-                finally:
-                    self.task_queue.task_done()
-
-            except Exception as e:
-                logger.exception("worker_loop unexpected error: %s", e)
-
-    def _debounce_check(self, path):
+    def _debounce(self, yaml_path: str) -> bool:
         now = time.time()
-        last = self.last_sync_time.get(path, 0)
+        last = self.last_trigger_time.get(yaml_path, 0)
         if now - last < self.debounce_seconds:
             return True
-        self.last_sync_time[path] = now
+        self.last_trigger_time[yaml_path] = now
         return False
 
-    def _enqueue_tasks(self, yaml_path: str, action: str):
-        """Кидаем задачи в очередь — по одной на каждый сервер, но в правильном порядке"""
+    def _worker_loop(self):
+        while True:
+            task = self.task_queue.get()
+            if task is None:  # сигнал завершения
+                break
+
+            action, yaml_path, server = task.action, task.yaml_path, task.server
+
+            try:
+                if action == "delete":
+                    delete_from_server(yaml_path, server)
+                else:
+                    sync_to_server(yaml_path, server)
+
+                send_api_request(server.host, server.api_port, action, yaml_path)
+
+                logger.info(
+                    "sync_success action=%s path=%s server=%s",
+                    action, os.path.basename(yaml_path), server.host
+                )
+            except Exception as e:
+                logger.error(
+                    "sync_failed action=%s path=%s server=%s error=%s",
+                    action, os.path.basename(yaml_path), server.host, e,
+                    exc_info=True
+                )
+            finally:
+                self.task_queue.task_done()
+
+    def _enqueue(self, yaml_path: str, action: str):
         if not check_service_status(
                 process_name=self.status_check.process_name,
-                min_uptime=self.status_check.min_uptime_seconds
-        ):
-            logger.error("action=service_check_failed path=%s", yaml_path)
+                min_uptime=self.status_check.min_uptime_seconds):
+            logger.warning("service_not_ready skip_sync path=%s", yaml_path)
             return
-
-        logger.info("action=enqueue_tasks path=%s type=%s servers=%d",
-                    yaml_path, action, len(self.servers))
 
         for server in self.servers:
             self.task_queue.put(SyncTask(action=action, yaml_path=yaml_path, server=server))
 
-    def _handle_event_path(self, src: str, event_type: str):
-        if not src or not src.endswith(".save"):
-            return
+        logger.info("enqueued action=%s path=%s servers=%d", action, yaml_path, len(self.servers))
 
-        path = os.path.abspath(src)
-        if not path.startswith(self.watch_dir + os.sep):
-            return
-        if path.startswith(self.auxiliary_watch_dir + os.sep):
-            return
-        if os.path.isdir(path):
-            return
-
-        if self._debounce_check(path):
-            return
-
-        time.sleep(0.15)  # небольшая задержка, чтобы файл успел записаться
-        if not os.path.isfile(path):
-            return
-
-        yaml_path = path[:-5] + ".yaml"
-        action = "new" if event_type in ("created", "moved") else "update"
-
-        logger.info("action=change_detected path=%s event=%s", yaml_path, event_type)
-        self._enqueue_tasks(yaml_path, action)
-
-    def _file_event(self, event):
+    def process(self, event):
         if event.is_directory:
             return
-        src = getattr(event, "dest_path", event.src_path)
-        self._handle_event_path(src, event.event_type)
 
-    on_created = on_modified = on_moved = _file_event
+        # ------------------------------------------------------------------
+        # 1. Основной кейс: редактор сохранил файл через .save → .yaml
+        # ------------------------------------------------------------------
+        if event.event_type == "moved" and hasattr(event, "dest_path"):
+            src_path = os.path.abspath(event.src_path)
+            dest_path = os.path.abspath(event.dest_path)
 
+            # Проверяем, что это именно окончание сохранения: file.yaml.save → file.yaml
+            if (src_path.endswith(".save") and
+                dest_path == src_path[:-5] + ".yaml" and
+                dest_path.startswith(self.watch_dir + os.sep) and
+                not dest_path.startswith(self.auxiliary_watch_dir + os.sep)):
+
+                if self._debounce(dest_path):
+                    return
+
+                # Даём файлу "устаканиться"
+                time.sleep(0.08)
+
+                if os.path.isfile(dest_path):
+                    logger.info("save_detected_via_rename path=%s", dest_path)
+                    self._enqueue(dest_path, "update")
+                return
+
+        # ------------------------------------------------------------------
+        # 2. Резервный кейс: кто-то напрямую создал/изменил .yaml (например, git, скрипт)
+        # ------------------------------------------------------------------
+        path = os.path.abspath(event.src_path)
+        if path.endswith(".yaml") and path.startswith(self.watch_dir + os.sep):
+            if path.startswith(self.auxiliary_watch_dir + os.sep):
+                return
+
+            if event.event_type in ("created", "modified"):
+                if self._debounce(path):
+                    return
+
+                time.sleep(0.05)
+                if os.path.isfile(path):
+                    logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
+                    action = "new" if event.event_type == "created" else "update"
+                    self._enqueue(path, action)
+
+    # Назначаем один обработчик на все события
+    on_created = on_modified = on_moved = process
+
+    # ------------------------------------------------------------------
+    # Обработка удаления
+    # ------------------------------------------------------------------
     def on_deleted(self, event):
         if event.is_directory:
             return
 
         path = os.path.abspath(event.src_path)
+
         if not path.startswith(self.watch_dir + os.sep):
             return
 
-        if path.endswith(".save"):
-            yaml_path = path[:-5] + ".yaml"
-        else:
-            yaml_path = path
+        yaml_path = path if path.endswith(".yaml") else (path[:-5] + ".yaml" if path.endswith(".save") else None)
+        if not yaml_path or not yaml_path.endswith(".yaml"):
+            return
 
-        # Удаляем локальный .yaml если он есть
+        # Удаляем локальный .yaml, если он остался (на случай удаления .save)
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
-                logger.info("action=local_yaml_deleted path=%s", yaml_path)
+                logger.info("local_yaml_removed path=%s", yaml_path)
             except OSError as e:
-                logger.error("action=local_yaml_delete_failed path=%s error=%s", yaml_path, e)
+                logger.error("failed_remove_local_yaml path=%s error=%s", yaml_path, e)
 
-        self._enqueue_tasks(yaml_path, "delete")
+        logger.info("file_deleted_trigger_sync path=%s", yaml_path)
+        self._enqueue(yaml_path, "delete")
 
     def stop(self):
-        """Вызывать при завершении программы"""
-        # Сигнализируем воркерам завершиться
+        """Грациозно завершаем все воркеры и дожидаемся выполнения задач"""
+        logger.info("stopping_sync_workers count=%d", len(self.workers))
         for _ in self.workers:
             self.task_queue.put(None)
         for t in self.workers:
-            t.join()
-        # Дожидаемся выполнения всех уже поставленных задач
-        self.task_queue.join()
-        logger.info("action=all_workers_stopped")
+            t.join(timeout=10)
+        self.task_queue.join()  # дожидаемся, пока все задачи обработаются
+        logger.info("all_sync_workers_stopped")
+
 
 def start_watcher(watch_dir: str,
                   auxiliary_watch_dir: str,
                   servers,
-                  debounce_seconds: float = 1.0,
-                  status_check = None):
-    """
-    Запускает наблюдатель за изменениями в директории и синхронизацию с серверами.
-    """
-    logger.info("action=start_watcher watch_dir=%s servers_count=%d", watch_dir, len(servers))
+                  debounce_seconds: float = 0.8,
+                  status_check=None):
+    logger.info("starting_watcher watch_dir=%s servers=%d", watch_dir, len(servers))
 
-    # Создаём обработчик (он же запустит воркеры внутри __init__)
-    event_handler = ConfigChangeHandler(
+    handler = ConfigChangeHandler(
         servers=servers,
         debounce_seconds=debounce_seconds,
         watch_dir=watch_dir,
@@ -189,43 +195,24 @@ def start_watcher(watch_dir: str,
         status_check=status_check
     )
 
-    # Создаём и запускаем watchdog observer
     observer = Observer()
-    observer.schedule(event_handler, path=watch_dir, recursive=True)
+    observer.schedule(handler, watch_dir, recursive=True)
     observer.start()
 
-    logger.info(
-        "action=watcher_started watch_dir=%s observer_thread_alive=%s workers=%d",
-        watch_dir,
-        observer.is_alive(),
-        len(event_handler.workers)
-    )
+    logger.info("watcher_started successfully")
 
     try:
-        # Основной цикл — просто держим процесс живым
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logger.info("action=keyboard_interrupt received=Ctrl+C")
-    except Exception as e:
-        logger.exception("action=unexpected_error_in_main_loop error=%s", e)
+        logger.info("keyboard_interrupt received, shutting down...")
     finally:
-        logger.info("action=shutting_down_watcher")
-
-        # 1. Останавливаем watchdog
         observer.stop()
-        logger.info("action=observer_stop_requested")
-
-        # 2. Грациозно останавливаем все воркеры и дожидаемся завершения задач
-        event_handler.stop()
-        logger.info("action=sync_workers_stopped")
-
-        # 3. Дожидаемся завершения потока observer
+        logger.info("observer_stopped")
         observer.join(timeout=10)
-        if observer.is_alive():
-            logger.warning("action=observer_thread_still_alive forcing_kill")
 
-        logger.info("action=watcher_fully_stopped")
+        handler.stop()
+        logger.info("watcher_fully_stopped")
 
 
 
