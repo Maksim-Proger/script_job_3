@@ -22,7 +22,7 @@ def worker():
         try:
             for server in servers:
                 try:
-                    logger.info("ACTION", action)
+                    logger.info("ACTION", action, exc_info=True)
                     sync_to_server(yaml_path, server)
                 except Exception as e:
                     logger.error(
