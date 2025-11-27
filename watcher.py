@@ -22,7 +22,10 @@ def worker():
         try:
             for server in servers:
                 try:
-                    logger.info("ACTION", action, exc_info=True)
+                    logger.info(
+                        "action=action",
+                        action
+                    )
                     sync_to_server(yaml_path, server)
                 except Exception as e:
                     logger.error(
@@ -209,13 +212,13 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 )
         task_queue.put(("delete", yaml_path, self.servers))
 
-        for server in self.servers:
-            logger.info(
-                "action=submit_delete path=%s target=%s",
-                yaml_path, server.host
-            )
-            self.executor.submit(delete_from_server, yaml_path, server)
-            self.executor.submit(send_api_request, server.host, server.api_port, "delete", yaml_path)
+        # for server in self.servers:
+        #     logger.info(
+        #         "action=submit_delete path=%s target=%s",
+        #         yaml_path, server.host
+        #     )
+        #     self.executor.submit(delete_from_server, yaml_path, server)
+        #     self.executor.submit(send_api_request, server.host, server.api_port, "delete", yaml_path)
 
     on_deleted = _file_deleted
 
