@@ -13,7 +13,7 @@ logger = logging.getLogger("sync")
     retry=retry_if_exception_type((paramiko.SSHException, OSError, ConnectionError)),
     reraise=True,
 )
-def sync_to_server(local_file: str, server: ServerConfig):
+def sync_to_server(local_file: str, server: ServerConfig, action: str):
     filename = os.path.basename(local_file)
     remote_full_path = os.path.join(server.remote_path, filename)
     remote_aux_dir = server.auxiliary_remote_path
@@ -64,36 +64,43 @@ def sync_to_server(local_file: str, server: ServerConfig):
 
         target_relative = os.path.relpath(remote_full_path, start=remote_aux_dir)
 
-        try:
-            sftp.remove(remote_link_path)
-            logger.debug(
-                "action=remove path=%s target=%s:%s",
-                remote_link_path, server.host, server.ssh_port
-            )
-        except IOError:
-            pass
+        if action == "new":
+            try:
+                sftp.remove(remote_link_path)
+                logger.debug(
+                    "action=remove path=%s target=%s:%s",
+                    remote_link_path, server.host, server.ssh_port
+                )
 
-        try:
-            sftp.symlink(target_relative, remote_link_path)
-            logger.info(
-                "action=symlink path=%s target=%s:%s",
-                remote_link_path, server.host, target_relative
+                try:
+                    sftp.symlink(target_relative, remote_link_path)
+                    logger.info(
+                        "action=symlink path=%s target=%s:%s",
+                        remote_link_path, server.host, target_relative
+                    )
+                except (IOError, AttributeError) as e:
+                    logger.debug("sftp.symlink failed (%s), trying ssh ln -s", e)
+                    cmd = f"ln -sf -- {shlex.quote(target_relative)} {shlex.quote(remote_link_path)}"
+                    stdin, stdout, stderr = ssh.exec_command(cmd)
+                    err = stderr.read().decode().strip()
+                    if err:
+                        logger.warning(
+                            "action=symlink_via_ssh path=%s target=%s:%s error=%s",
+                            remote_link_path, server.host, target_relative, err
+                        )
+                    else:
+                        logger.info(
+                            "action=symlink_via_ssh path=%s target=%s:%s",
+                            remote_link_path, server.host, target_relative
+                        )
+            except IOError:
+                pass
+
+        else:
+            logger.debug(
+                "action=skip_symlink_update reason=update_event path=%s",
+                remote_link_path
             )
-        except (IOError, AttributeError) as e:
-            logger.debug("sftp.symlink failed (%s), trying ssh ln -s", e)
-            cmd = f"ln -sf -- {shlex.quote(target_relative)} {shlex.quote(remote_link_path)}"
-            stdin, stdout, stderr = ssh.exec_command(cmd)
-            err = stderr.read().decode().strip()
-            if err:
-                logger.warning(
-                    "action=symlink_via_ssh path=%s target=%s:%s error=%s",
-                    remote_link_path, server.host, target_relative, err
-                )
-            else:
-                logger.info(
-                    "action=symlink_via_ssh path=%s target=%s:%s",
-                    remote_link_path, server.host, target_relative
-                )
 
     except (paramiko.SSHException, OSError, ConnectionError) as e:
         logger.error(

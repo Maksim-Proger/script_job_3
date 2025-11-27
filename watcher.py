@@ -1,7 +1,6 @@
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from threading import Thread
 
@@ -26,7 +25,7 @@ def worker():
                     if action == "delete":
                         delete_from_server(yaml_path, server)
                     else:
-                        sync_to_server(yaml_path, server)
+                        sync_to_server(yaml_path, server, action)
                 except Exception as e:
                     logger.error(
                         "action=sync path=%s target=%s error=%s",
@@ -75,16 +74,16 @@ class ConfigChangeHandler(FileSystemEventHandler):
         self.last_sync_time[path] = now
         return False
 
-    @staticmethod
-    def _sync_file(local_file, server):
-        try:
-            sync_to_server(local_file, server)
-        except Exception as e:
-            logger.error(
-                "action=sync path=%s target=%s:%s error=%s",
-                local_file, server.host,
-                getattr(server, "ssh_port", "<no-port>"), e, exc_info=True
-            )
+    # @staticmethod
+    # def _sync_file(local_file, server):
+    #     try:
+    #         sync_to_server(local_file, server)
+    #     except Exception as e:
+    #         logger.error(
+    #             "action=sync path=%s target=%s:%s error=%s",
+    #             local_file, server.host,
+    #             getattr(server, "ssh_port", "<no-port>"), e, exc_info=True
+    #         )
 
     def _handle_event_path(self, src: str, event_type: str):
         if not src:
@@ -242,8 +241,8 @@ def start_watcher(watch_dir: str,
     try:
         observer.join()
     except KeyboardInterrupt:
-        logger.info("action=watcher_keyboard_interrupt")
         observer.stop()
+        logger.info("action=watcher_keyboard_interrupt")
     finally:
         observer.join()
         logger.info("action=watcher_stopped")
