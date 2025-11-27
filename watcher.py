@@ -15,10 +15,12 @@ from api_client import send_api_request
 
 logger = logging.getLogger("watcher")
 
+
 class SyncTask(NamedTuple):
     action: str        # "new", "update", "delete"
     yaml_path: str
     server: Any        # объект сервера
+
 
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self, servers, debounce_seconds: float, watch_dir: str,
@@ -57,6 +59,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 break
 
             action, yaml_path, server = task.action, task.yaml_path, task.server
+
             try:
                 if action == "delete":
                     delete_from_server(yaml_path, server)
@@ -97,17 +100,25 @@ class ConfigChangeHandler(FileSystemEventHandler):
         path = os.path.abspath(event.src_path)
 
         # ------------------------------------------------------------------
-        # 1. Любой .save файл → соответствующий .yaml
+        # 1. Обработка .save → .yaml (редактор)
         # ------------------------------------------------------------------
-        if path.endswith(".save") and path.startswith(self.watch_dir + os.sep) and not path.startswith(self.auxiliary_watch_dir + os.sep):
-            yaml_path = path[:-5] + ".yaml"
-            if self._debounce(yaml_path):
+        if event.event_type == "moved" and hasattr(event, "dest_path"):
+            src_path = os.path.abspath(event.src_path)
+            dest_path = os.path.abspath(event.dest_path)
+
+            if (src_path.endswith(".save") and
+                dest_path == src_path[:-5] + ".yaml" and
+                dest_path.startswith(self.watch_dir + os.sep) and
+                not dest_path.startswith(self.auxiliary_watch_dir + os.sep)):
+
+                if self._debounce(dest_path):
+                    return
+
+                time.sleep(0.08)
+                if os.path.isfile(dest_path):
+                    logger.info("save_detected_via_rename path=%s", dest_path)
+                    self._enqueue(dest_path, "update")
                 return
-            time.sleep(0.05)
-            if os.path.isfile(yaml_path):
-                logger.info("save_detected path=%s", yaml_path)
-                self._enqueue(yaml_path, "update")
-            return
 
         # ------------------------------------------------------------------
         # 2. Прямое создание/изменение .yaml
@@ -115,13 +126,14 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if path.endswith(".yaml") and path.startswith(self.watch_dir + os.sep):
             if path.startswith(self.auxiliary_watch_dir + os.sep):
                 return
+
             if event.event_type in ("created", "modified"):
                 if self._debounce(path):
                     return
                 time.sleep(0.05)
                 if os.path.isfile(path):
+                    logger.info("direct_yaml_change path=%s event=%s", path, event.event_type)
                     action = "new" if event.event_type == "created" else "update"
-                    logger.info("yaml_change_detected path=%s action=%s", path, action)
                     self._enqueue(path, action)
 
     on_created = on_modified = on_moved = process
@@ -161,6 +173,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
             t.join(timeout=10)
         self.task_queue.join()
         logger.info("all_sync_workers_stopped")
+
 
 def start_watcher(watch_dir: str,
                   auxiliary_watch_dir: str,
