@@ -153,7 +153,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     self._enqueue(path, action)
 
     # Привязываем один обработчик на все события
-    on_created = on_modified = on_moved = process
+    on_modified = on_created = on_moved = process
 
     # ----------------------------------------------------------------
     # 3. Обработка удаления
