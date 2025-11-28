@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 import time
 from queue import Queue
 from threading import Thread
@@ -15,6 +16,8 @@ from sync import delete_from_server
 logger = logging.getLogger("watcher")
 
 task_queue = Queue()
+active_tasks = set()
+active_tasks_lock = threading.Lock()
 
 def worker():
     while True:
@@ -22,31 +25,35 @@ def worker():
             action, yaml_path, servers = task_queue.get()
             try:
                 for server in servers:
+                    sync_ok = False
                     try:
                         if action == "delete":
                             delete_from_server(yaml_path, server)
                         else:
                             sync_to_server(yaml_path, server, action)
+                        sync_ok = True
                     except Exception as e:
                         logger.error(
                             "action=sync path=%s target=%s error=%s",
                             yaml_path, server.host, e, exc_info=True
                         )
 
-                    try:
-                        send_api_request(server.host, server.api_port, action, yaml_path)
-                    except Exception as e:
-                        logger.error(
-                            "action=api_request_failed target=%s error=%s",
-                            server.host, e, exc_info=True
-                        )
+                    if sync_ok:
+                        try:
+                            send_api_request(server.host, server.api_port, action, yaml_path)
+                        except Exception as e:
+                            logger.error(
+                                "action=api_request_failed target=%s error=%s",
+                                server.host, e, exc_info=True
+                            )
             finally:
                 task_queue.task_done()
-        except Exception as e:
-            logger.exception("action=worker_fatal_error", e)
+                with active_tasks_lock:
+                    active_tasks.discard(yaml_path)
+        except Exception:
+            logger.exception("action=worker_fatal_error")
 
-for _ in range(1):
-    Thread(target=worker, daemon=True).start()
+Thread(target=worker, daemon=True).start()
 
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self,
@@ -114,7 +121,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not os.path.isfile(path):
             return
 
-        yaml_path = path[:-5] + ".yaml"
+        # yaml_path = path[:-5] + ".yaml"
+        root, ext = os.path.splitext(path)
+        yaml_path = root + ".yaml"
 
         if event_type == "created":
             action = "new"
@@ -139,7 +148,16 @@ class ConfigChangeHandler(FileSystemEventHandler):
             filename
         )
 
-        task_queue.put((action, yaml_path, self.servers))
+        # task_queue.put((action, yaml_path, self.servers))
+        with active_tasks_lock:
+            if yaml_path not in active_tasks:
+                active_tasks.add(yaml_path)
+                task_queue.put((action, yaml_path, self.servers))
+            else:
+                logger.debug(
+                    "action=skip_duplicate_task path=%s",
+                    yaml_path
+                )
 
     def _file_event(self, event):
         if event.is_directory:
@@ -177,16 +195,19 @@ class ConfigChangeHandler(FileSystemEventHandler):
             )
             return
 
+        root, ext = os.path.splitext(path)
+        yaml_path = root + ".yaml" if ext == ".save" else path
+
         filename = os.path.basename(path)
         logger.info(
             "action=file_deleted path=%s",
             filename
         )
 
-        if path.endswith(".save"):
-            yaml_path = path[:-5] + ".yaml"
-        else:
-            yaml_path = path
+        # if path.endswith(".save"):
+        #     yaml_path = path[:-5] + ".yaml"
+        # else:
+        #     yaml_path = path
 
         if os.path.exists(yaml_path):
             try:
@@ -200,7 +221,17 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     "action=delete_master_yaml_failed path=%s error=%s",
                     yaml_path, e
                 )
-        task_queue.put(("delete", yaml_path, self.servers))
+
+        # task_queue.put(("delete", yaml_path, self.servers))
+        with active_tasks_lock:
+            if yaml_path not in active_tasks:
+                active_tasks.add(yaml_path)
+                task_queue.put(("delete", yaml_path, self.servers))
+            else:
+                logger.debug(
+                    "action=skip_duplicate_delete_task path=%s",
+                    yaml_path
+                )
 
     on_deleted = _file_deleted
 
