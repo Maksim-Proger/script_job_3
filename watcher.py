@@ -18,32 +18,34 @@ task_queue = Queue()
 
 def worker():
     while True:
-        action, yaml_path, servers = task_queue.get()
         try:
-            for server in servers:
-                try:
-                    if action == "delete":
-                        delete_from_server(yaml_path, server)
-                    else:
-                        sync_to_server(yaml_path, server, action)
-                except Exception as e:
-                    logger.error(
-                        "action=sync path=%s target=%s error=%s",
-                        yaml_path, server.host, e, exc_info=True
-                    )
+            action, yaml_path, servers = task_queue.get()
+            try:
+                for server in servers:
+                    try:
+                        if action == "delete":
+                            delete_from_server(yaml_path, server)
+                        else:
+                            sync_to_server(yaml_path, server, action)
+                    except Exception as e:
+                        logger.error(
+                            "action=sync path=%s target=%s error=%s",
+                            yaml_path, server.host, e, exc_info=True
+                        )
 
-                try:
-                    send_api_request(server.host, server.api_port, action, yaml_path)
-                except Exception as e:
-                    logger.error(
-                        "action=api_request_failed target=%s error=%s",
-                        server.host, e, exc_info=True
-                    )
-        finally:
-            task_queue.task_done()
+                    try:
+                        send_api_request(server.host, server.api_port, action, yaml_path)
+                    except Exception as e:
+                        logger.error(
+                            "action=api_request_failed target=%s error=%s",
+                            server.host, e, exc_info=True
+                        )
+            finally:
+                task_queue.task_done()
+        except Exception as e:
+            logger.exception("action=worker_fatal_error", e)
 
-# создаём 2 фоновых worker-а
-for _ in range(2):
+for _ in range(1):
     Thread(target=worker, daemon=True).start()
 
 class ConfigChangeHandler(FileSystemEventHandler):
@@ -73,17 +75,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
             return True
         self.last_sync_time[path] = now
         return False
-
-    # @staticmethod
-    # def _sync_file(local_file, server):
-    #     try:
-    #         sync_to_server(local_file, server)
-    #     except Exception as e:
-    #         logger.error(
-    #             "action=sync path=%s target=%s:%s error=%s",
-    #             local_file, server.host,
-    #             getattr(server, "ssh_port", "<no-port>"), e, exc_info=True
-    #         )
 
     def _handle_event_path(self, src: str, event_type: str):
         if not src:
