@@ -71,9 +71,6 @@ class AppConfig(BaseModel):
 #
 #     return AppConfig.model_validate(raw)
 
-# Тестовый вариант 2
-def load_config(path: str = None) -> AppConfig:
-    if path is None:
-        path = os.path.join(os.getcwd(), "config.yaml")
+
 
 
