@@ -121,7 +121,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not os.path.isfile(path):
             return
 
-        # yaml_path = path[:-5] + ".yaml"
         root, ext = os.path.splitext(path)
         yaml_path = root + ".yaml"
 
@@ -148,7 +147,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
             filename
         )
 
-        # task_queue.put((action, yaml_path, self.servers))
         with active_tasks_lock:
             if yaml_path not in active_tasks:
                 active_tasks.add(yaml_path)
@@ -204,11 +202,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
             filename
         )
 
-        # if path.endswith(".save"):
-        #     yaml_path = path[:-5] + ".yaml"
-        # else:
-        #     yaml_path = path
-
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
@@ -222,7 +215,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     yaml_path, e
                 )
 
-        # task_queue.put(("delete", yaml_path, self.servers))
         with active_tasks_lock:
             if yaml_path not in active_tasks:
                 active_tasks.add(yaml_path)
