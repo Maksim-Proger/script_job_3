@@ -1,6 +1,5 @@
 import os
 import yaml
-import sys
 from typing import List
 from pydantic import BaseModel, Field, FilePath, field_validator
 
@@ -40,36 +39,14 @@ class AppConfig(BaseModel):
             raise ValueError(f"directory does not exist: {path}")
         return os.path.abspath(path)
 
-# Тестовый вариант
-# def load_config(path: str = None) -> AppConfig:
-#     # Определяем базовый путь
-#     if getattr(sys, 'frozen', False):
-#         # если скрипт упакован PyInstaller
-#         base_path = sys._MEIPASS
-#     else:
-#         base_path = os.path.dirname(__file__)
-#
-#     # если путь не передан, используем config.yaml
-#     if path is None:
-#         path = os.path.join(base_path, "config.yaml")
-#
-#     if not os.path.exists(path):
-#         raise FileNotFoundError(f"config not found: {path}")
-#
-#     with open(path, "r") as fp:
-#         raw = yaml.safe_load(fp)
-#
-#     return AppConfig.model_validate(raw)
+def load_config(path: str = "config.yaml") -> AppConfig:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"config not found: {path}")
 
-# Старый вариант
-# def load_config(path: str = "config.yaml") -> AppConfig:
-#     if not os.path.exists(path):
-#         raise FileNotFoundError(f"config not found: {path}")
-#
-#     with open(path, "r") as fp:
-#         raw = yaml.safe_load(fp)
-#
-#     return AppConfig.model_validate(raw)
+    with open(path, "r") as fp:
+        raw = yaml.safe_load(fp)
+
+    return AppConfig.model_validate(raw)
 
 
 
