@@ -13,11 +13,15 @@ logger = logging.getLogger("sync")
     retry=retry_if_exception_type((paramiko.SSHException, OSError, ConnectionError)),
     reraise=True,
 )
-def sync_to_server(local_file: str, server: ServerConfig, action: str):
-    filename = os.path.basename(local_file)
-    remote_full_path = os.path.join(server.remote_path, filename)
+def sync_to_server(local_file: str, server: ServerConfig, action: str, watch_dir: str):
+
+    rel_path = os.path.relpath(local_file, start=watch_dir)
+    remote_full_path = os.path.join(server.remote_path, rel_path)
     remote_aux_dir = server.auxiliary_remote_path
-    remote_link_path = os.path.join(remote_aux_dir, filename)
+    remote_link_path = os.path.join(remote_aux_dir, rel_path)
+
+    remote_dirs = os.path.dirname(remote_full_path)
+    link_dirs = os.path.dirname(remote_link_path)
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -38,38 +42,36 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str):
 
         sftp = ssh.open_sftp()
 
-        try:
-            sftp.stat(server.remote_path)
-        except IOError:
-            logger.info(
-                "action=mkdir path=%s target=%s:%s",
-                server.remote_path, server.host, server.ssh_port
-            )
-            sftp.mkdir(server.remote_path)
+        def mkdirs(path):
+            parts = path.split('/')
+            current = ""
+            for part in parts:
+                if not part:
+                    continue
+                current += f"/{part}"
+                try:
+                    sftp.stat(current)
+                except IOError:
+                    sftp.mkdir(current)
+                    logger.info("action=mkdir path=%s target=%s", current, server.host)
 
-        try:
-            sftp.stat(remote_aux_dir)
-        except IOError:
-            logger.info(
-                "action=mkdir path=%s target=%s:%s",
-                remote_aux_dir, server.host, server.ssh_port
-            )
-            sftp.mkdir(remote_aux_dir)
+        mkdirs(remote_dirs)
+        mkdirs(link_dirs)
 
         sftp.put(local_file, remote_full_path)
         logger.info(
             "action=upload path=%s target=%s:%s",
-            filename, server.host, remote_full_path
+            local_file, server.host, remote_full_path
         )
 
-        target_relative = os.path.relpath(remote_full_path, start=remote_aux_dir)
-
         if action == "new":
+            target_relative = os.path.relpath(remote_full_path, start=link_dirs)
+
             try:
                 sftp.remove(remote_link_path)
                 logger.debug(
-                    "action=remove path=%s target=%s:%s",
-                    remote_link_path, server.host, server.ssh_port
+                    "action=remove path=%s target=%s",
+                    remote_link_path, server.host
                 )
             except IOError:
                 pass
@@ -87,20 +89,14 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str):
                 err = stderr.read().decode().strip()
                 if err:
                     logger.warning(
-                        "action=symlink_via_ssh path=%s target=%s:%s error=%s",
-                        remote_link_path, server.host, target_relative, err
+                        "action=symlink_via_ssh path=%s target=%s error=%s",
+                        remote_link_path, target_relative, err
                     )
                 else:
                     logger.info(
-                        "action=symlink_via_ssh path=%s target=%s:%s",
-                        remote_link_path, server.host, target_relative
+                        "action=symlink_via_ssh path=%s target=%s",
+                        remote_link_path, target_relative
                     )
-
-        else:
-            logger.debug(
-                "action=skip_symlink_update reason=update_event path=%s",
-                remote_link_path
-            )
 
     except (paramiko.SSHException, OSError, ConnectionError) as e:
         logger.error(
@@ -113,20 +109,100 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str):
             sftp.close()
         ssh.close()
 
+    #     try:
+    #         sftp.stat(server.remote_path)
+    #     except IOError:
+    #         logger.info(
+    #             "action=mkdir path=%s target=%s:%s",
+    #             server.remote_path, server.host, server.ssh_port
+    #         )
+    #         sftp.mkdir(server.remote_path)
+    #
+    #     try:
+    #         sftp.stat(remote_aux_dir)
+    #     except IOError:
+    #         logger.info(
+    #             "action=mkdir path=%s target=%s:%s",
+    #             remote_aux_dir, server.host, server.ssh_port
+    #         )
+    #         sftp.mkdir(remote_aux_dir)
+    #
+    #     sftp.put(local_file, remote_full_path)
+    #     logger.info(
+    #         "action=upload path=%s target=%s:%s",
+    #         filename, server.host, remote_full_path
+    #     )
+    #
+    #     target_relative = os.path.relpath(remote_full_path, start=remote_aux_dir)
+    #
+    #     if action == "new":
+    #         try:
+    #             sftp.remove(remote_link_path)
+    #             logger.debug(
+    #                 "action=remove path=%s target=%s:%s",
+    #                 remote_link_path, server.host, server.ssh_port
+    #             )
+    #         except IOError:
+    #             pass
+    #
+    #         try:
+    #             sftp.symlink(target_relative, remote_link_path)
+    #             logger.info(
+    #                 "action=symlink path=%s target=%s:%s",
+    #                 remote_link_path, server.host, target_relative
+    #             )
+    #         except (IOError, AttributeError) as e:
+    #             logger.debug("sftp.symlink failed (%s), trying ssh ln -s", e)
+    #             cmd = f"ln -sf -- {shlex.quote(target_relative)} {shlex.quote(remote_link_path)}"
+    #             stdin, stdout, stderr = ssh.exec_command(cmd)
+    #             err = stderr.read().decode().strip()
+    #             if err:
+    #                 logger.warning(
+    #                     "action=symlink_via_ssh path=%s target=%s:%s error=%s",
+    #                     remote_link_path, server.host, target_relative, err
+    #                 )
+    #             else:
+    #                 logger.info(
+    #                     "action=symlink_via_ssh path=%s target=%s:%s",
+    #                     remote_link_path, server.host, target_relative
+    #                 )
+    #
+    #     else:
+    #         logger.debug(
+    #             "action=skip_symlink_update reason=update_event path=%s",
+    #             remote_link_path
+    #         )
+    #
+    # except (paramiko.SSHException, OSError, ConnectionError) as e:
+    #     logger.error(
+    #         "action=upload path=%s target=%s:%s error=%s",
+    #         local_file, server.host, server.ssh_port, e
+    #     )
+    #     raise
+    # finally:
+    #     if sftp:
+    #         sftp.close()
+    #     ssh.close()
+
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=2, min=2, max=30),
     retry=retry_if_exception_type((paramiko.SSHException, OSError, ConnectionError)),
     reraise=True,
 )
-def delete_from_server(file_path: str, server: ServerConfig):
+def delete_from_server(file_path: str, server: ServerConfig, watch_dir: str):
     if file_path.endswith(".save"):
-        filename = os.path.basename(file_path[:-5] + ".yaml")
+        if file_path.endswith(".yaml.save"):
+            relative_file = file_path[:-5]
+        else:
+            root, _ = os.path.splitext(file_path)
+            relative_file = root + ".yaml"
     else:
-        filename = os.path.basename(file_path)
+        relative_file = file_path
 
-    remote_file = os.path.join(server.remote_path, filename)
-    remote_link = os.path.join(server.auxiliary_remote_path, filename)
+    rel_path = os.path.relpath(relative_file, start=watch_dir)
+    remote_file = os.path.join(server.remote_path, rel_path)
+    remote_link = os.path.join(server.auxiliary_remote_path, rel_path)
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -166,9 +242,65 @@ def delete_from_server(file_path: str, server: ServerConfig):
     except (paramiko.SSHException, OSError) as e:
         logger.error(
             "action=delete path=%s target=%s:%s error=%s",
-            filename, server.host, server.ssh_port, e
+            relative_file, server.host, server.ssh_port, e
         )
     finally:
         if sftp:
             sftp.close()
         ssh.close()
+
+
+
+
+    # if file_path.endswith(".save"):
+    #     filename = os.path.basename(file_path[:-5] + ".yaml")
+    # else:
+    #     filename = os.path.basename(file_path)
+    #
+    # remote_file = os.path.join(server.remote_path, filename)
+    # remote_link = os.path.join(server.auxiliary_remote_path, filename)
+    #
+    # ssh = paramiko.SSHClient()
+    # ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # sftp = None
+    #
+    # try:
+    #     logger.info(
+    #         "action=connect target=%s:%s user=%s",
+    #         server.host, server.ssh_port, server.username
+    #     )
+    #     ssh.connect(
+    #         hostname=server.host,
+    #         port=server.ssh_port,
+    #         username=server.username,
+    #         key_filename=str(server.key_filename),
+    #         timeout=15,
+    #     )
+    #     sftp = ssh.open_sftp()
+    #
+    #     for path in [remote_file, remote_link]:
+    #         try:
+    #             logger.info(
+    #                 "action=delete path=%s target=%s:%s",
+    #                 path, server.host, server.ssh_port
+    #             )
+    #             sftp.remove(path)
+    #             logger.info(
+    #                 "action=deleted path=%s target=%s:%s",
+    #                 path, server.host, server.ssh_port
+    #             )
+    #         except IOError:
+    #             logger.debug(
+    #                 "action=delete path=%s target=%s:%s not found",
+    #                 path, server.host, server.ssh_port
+    #             )
+    #
+    # except (paramiko.SSHException, OSError) as e:
+    #     logger.error(
+    #         "action=delete path=%s target=%s:%s error=%s",
+    #         filename, server.host, server.ssh_port, e
+    #     )
+    # finally:
+    #     if sftp:
+    #         sftp.close()
+    #     ssh.close()

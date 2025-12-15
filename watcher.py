@@ -19,7 +19,7 @@ task_queue = Queue()
 active_tasks = set()
 active_tasks_lock = threading.Lock()
 
-def worker():
+def worker(watch_dir: str):
     while True:
         try:
             action, yaml_path, servers = task_queue.get()
@@ -28,9 +28,9 @@ def worker():
                     sync_ok = False
                     try:
                         if action == "delete":
-                            delete_from_server(yaml_path, server)
+                            delete_from_server(yaml_path, server, watch_dir)
                         else:
-                            sync_to_server(yaml_path, server, action)
+                            sync_to_server(yaml_path, server, action, watch_dir)
                         sync_ok = True
                     except Exception as e:
                         logger.error(
@@ -52,8 +52,6 @@ def worker():
                     active_tasks.discard(yaml_path)
         except Exception:
             logger.exception("action=worker_fatal_error")
-
-Thread(target=worker, daemon=True).start()
 
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self,
@@ -84,6 +82,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         return False
 
     def _handle_event_path(self, src: str, event_type: str):
+
         if not src:
             return
 
@@ -121,8 +120,10 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not os.path.isfile(path):
             return
 
-        root, ext = os.path.splitext(path)
-        yaml_path = root + ".yaml"
+        if path.endswith(".yaml.save"):
+            yaml_path = path[:-5]
+        else:
+            yaml_path = path
 
         if event_type == "created":
             action = "new"
@@ -244,6 +245,7 @@ def start_watcher(watch_dir: str,
         auxiliary_watch_dir,
         status_check
     )
+
     observer = Observer()
     observer.schedule(event_handler, path=watch_dir, recursive=True)
     observer.start()
@@ -251,6 +253,8 @@ def start_watcher(watch_dir: str,
         "action=observer_started thread_alive=%s",
         observer.is_alive()
     )
+
+    Thread(target=worker, args=(watch_dir,), daemon=True).start()
 
     try:
         observer.join()
