@@ -182,9 +182,8 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not path.startswith(self.watch_dir + os.sep):
             return
 
-        # === КЛЮЧЕВАЯ ЛОГИКА ===
         if path.endswith(".yaml.save"):
-            yaml_path = path[:-5]  # убираем только ".save"
+            yaml_path = path[:-5]
         elif path.endswith(".yaml"):
             yaml_path = path
         else:
@@ -195,7 +194,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
             yaml_path
         )
 
-        # удаляем yaml локально
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
@@ -210,7 +208,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 )
                 return
 
-        # === УДАЛЕНИЕ ПУСТЫХ ДИРЕКТОРИЙ (ТОЛЬКО ВНУТРИ watch_dir) ===
         current_dir = os.path.dirname(yaml_path)
 
         while (
@@ -219,7 +216,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         ):
             try:
                 if os.listdir(current_dir):
-                    break  # директория не пустая
+                    break
                 os.rmdir(current_dir)
                 logger.info(
                     "action=deleted_empty_dir path=%s",
@@ -227,9 +224,8 @@ class ConfigChangeHandler(FileSystemEventHandler):
                 )
                 current_dir = os.path.dirname(current_dir)
             except OSError:
-                break  # не удалось удалить — выходим
+                break
 
-        # ставим delete-задачу
         with active_tasks_lock:
             if yaml_path not in active_tasks:
                 active_tasks.add(yaml_path)

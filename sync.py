@@ -140,7 +140,6 @@ def delete_from_server(file_path: str, server: ServerConfig, watch_dir: str):
             except IOError:
                 pass
 
-        # === УДАЛЕНИЕ ПУСТЫХ ДИРЕКТОРИЙ ===
         for dir_path in deleted_dirs:
             if dir_path.startswith(server.remote_path):
                 _cleanup_empty_dirs(
