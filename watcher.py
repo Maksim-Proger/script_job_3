@@ -208,6 +208,26 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     "action=delete_master_yaml_failed path=%s error=%s",
                     yaml_path, e
                 )
+                return
+
+        # === УДАЛЕНИЕ ПУСТЫХ ДИРЕКТОРИЙ (ТОЛЬКО ВНУТРИ watch_dir) ===
+        current_dir = os.path.dirname(yaml_path)
+
+        while (
+                current_dir.startswith(self.watch_dir + os.sep)
+                and current_dir != self.watch_dir
+        ):
+            try:
+                if os.listdir(current_dir):
+                    break  # директория не пустая
+                os.rmdir(current_dir)
+                logger.info(
+                    "action=deleted_empty_dir path=%s",
+                    current_dir
+                )
+                current_dir = os.path.dirname(current_dir)
+            except OSError:
+                break  # не удалось удалить — выходим
 
         # ставим delete-задачу
         with active_tasks_lock:
