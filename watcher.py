@@ -174,35 +174,28 @@ class ConfigChangeHandler(FileSystemEventHandler):
     on_modified = on_created = on_moved = _file_event
 
     def _file_deleted(self, event):
-        logger.info(
-            "action=file_deleted_event_received event=%s",
-            event
-        )
         if event.is_directory:
             return
 
         path = os.path.abspath(event.src_path)
-        logger.info(
-            "action=file_deleted_path path=%s",
-            path
-        )
 
         if not path.startswith(self.watch_dir + os.sep):
-            logger.info(
-                "action=delete_skip path=%s reason=outside_watch_dir",
-                path
-            )
             return
 
-        root, ext = os.path.splitext(path)
-        yaml_path = root + ".yaml" if ext == ".save" else path
+        # === КЛЮЧЕВАЯ ЛОГИКА ===
+        if path.endswith(".yaml.save"):
+            yaml_path = path[:-5]  # убираем только ".save"
+        elif path.endswith(".yaml"):
+            yaml_path = path
+        else:
+            return
 
-        filename = os.path.basename(path)
         logger.info(
-            "action=file_deleted path=%s",
-            filename
+            "action=file_deleted yaml_path=%s",
+            yaml_path
         )
 
+        # удаляем yaml локально
         if os.path.exists(yaml_path):
             try:
                 os.remove(yaml_path)
@@ -216,15 +209,11 @@ class ConfigChangeHandler(FileSystemEventHandler):
                     yaml_path, e
                 )
 
+        # ставим delete-задачу
         with active_tasks_lock:
             if yaml_path not in active_tasks:
                 active_tasks.add(yaml_path)
                 task_queue.put(("delete", yaml_path, self.servers))
-            else:
-                logger.debug(
-                    "action=skip_duplicate_delete_task path=%s",
-                    yaml_path
-                )
 
     on_deleted = _file_deleted
 
