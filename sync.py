@@ -2,6 +2,7 @@ import os
 import logging
 import paramiko
 import shlex
+
 from config_loader import ServerConfig
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -14,11 +15,9 @@ logger = logging.getLogger("sync")
     reraise=True,
 )
 def sync_to_server(local_file: str, server: ServerConfig, action: str, watch_dir: str):
-
     rel_path = os.path.relpath(local_file, start=watch_dir)
     remote_full_path = os.path.join(server.remote_path, rel_path)
-    remote_aux_dir = server.auxiliary_remote_path
-    remote_link_path = os.path.join(remote_aux_dir, rel_path)
+    remote_link_path = os.path.join(server.auxiliary_remote_path, rel_path)
 
     remote_dirs = os.path.dirname(remote_full_path)
     link_dirs = os.path.dirname(remote_link_path)
@@ -32,6 +31,7 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str, watch_dir
             "action=connect target=%s:%s user=%s",
             server.host, server.ssh_port, server.username
         )
+
         ssh.connect(
             hostname=server.host,
             port=server.ssh_port,
@@ -53,7 +53,10 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str, watch_dir
                     sftp.stat(current)
                 except IOError:
                     sftp.mkdir(current)
-                    logger.info("action=mkdir path=%s target=%s", current, server.host)
+                    logger.info(
+                        "action=mkdir path=%s target=%s",
+                        current, server.host
+                    )
 
         mkdirs(remote_dirs)
         mkdirs(link_dirs)
@@ -69,41 +72,19 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str, watch_dir
 
             try:
                 sftp.remove(remote_link_path)
-                logger.debug(
-                    "action=remove path=%s target=%s",
-                    remote_link_path, server.host
-                )
             except IOError:
                 pass
 
             try:
                 sftp.symlink(target_relative, remote_link_path)
-                logger.info(
-                    "action=symlink path=%s target=%s:%s",
-                    remote_link_path, server.host, target_relative
+            except (IOError, AttributeError):
+                cmd = (
+                    f"ln -sf -- "
+                    f"{shlex.quote(target_relative)} "
+                    f"{shlex.quote(remote_link_path)}"
                 )
-            except (IOError, AttributeError) as e:
-                logger.debug("sftp.symlink failed (%s), trying ssh ln -s", e)
-                cmd = f"ln -sf -- {shlex.quote(target_relative)} {shlex.quote(remote_link_path)}"
-                stdin, stdout, stderr = ssh.exec_command(cmd)
-                err = stderr.read().decode().strip()
-                if err:
-                    logger.warning(
-                        "action=symlink_via_ssh path=%s target=%s error=%s",
-                        remote_link_path, target_relative, err
-                    )
-                else:
-                    logger.info(
-                        "action=symlink_via_ssh path=%s target=%s",
-                        remote_link_path, target_relative
-                    )
+                ssh.exec_command(cmd)
 
-    except (paramiko.SSHException, OSError, ConnectionError) as e:
-        logger.error(
-            "action=upload path=%s target=%s:%s error=%s",
-            local_file, server.host, server.ssh_port, e
-        )
-        raise
     finally:
         if sftp:
             sftp.close()
@@ -116,16 +97,13 @@ def sync_to_server(local_file: str, server: ServerConfig, action: str, watch_dir
     reraise=True,
 )
 def delete_from_server(file_path: str, server: ServerConfig, watch_dir: str):
-    if file_path.endswith(".save"):
-        if file_path.endswith(".yaml.save"):
-            relative_file = file_path[:-5]
-        else:
-            root, _ = os.path.splitext(file_path)
-            relative_file = root + ".yaml"
+    if file_path.endswith(".yaml.save"):
+        relative_file = file_path[:-5]
     else:
         relative_file = file_path
 
     rel_path = os.path.relpath(relative_file, start=watch_dir)
+
     remote_file = os.path.join(server.remote_path, rel_path)
     remote_link = os.path.join(server.auxiliary_remote_path, rel_path)
 
@@ -138,6 +116,7 @@ def delete_from_server(file_path: str, server: ServerConfig, watch_dir: str):
             "action=connect target=%s:%s user=%s",
             server.host, server.ssh_port, server.username
         )
+
         ssh.connect(
             hostname=server.host,
             port=server.ssh_port,
@@ -145,31 +124,63 @@ def delete_from_server(file_path: str, server: ServerConfig, watch_dir: str):
             key_filename=str(server.key_filename),
             timeout=15,
         )
+
         sftp = ssh.open_sftp()
 
-        for path in [remote_file, remote_link]:
+        deleted_dirs = set()
+
+        for path in (remote_file, remote_link):
             try:
-                logger.info(
-                    "action=delete path=%s target=%s:%s",
-                    path, server.host, server.ssh_port
-                )
                 sftp.remove(path)
                 logger.info(
-                    "action=deleted path=%s target=%s:%s",
-                    path, server.host, server.ssh_port
+                    "action=deleted path=%s target=%s",
+                    path, server.host
                 )
+                deleted_dirs.add(os.path.dirname(path))
             except IOError:
-                logger.debug(
-                    "action=delete path=%s target=%s:%s not found",
-                    path, server.host, server.ssh_port
+                pass
+
+        # === УДАЛЕНИЕ ПУСТЫХ ДИРЕКТОРИЙ ===
+        for dir_path in deleted_dirs:
+            if dir_path.startswith(server.remote_path):
+                _cleanup_empty_dirs(
+                    sftp,
+                    dir_path,
+                    server.remote_path,
+                    server
                 )
 
-    except (paramiko.SSHException, OSError) as e:
-        logger.error(
-            "action=delete path=%s target=%s:%s error=%s",
-            relative_file, server.host, server.ssh_port, e
-        )
+            if dir_path.startswith(server.auxiliary_remote_path):
+                _cleanup_empty_dirs(
+                    sftp,
+                    dir_path,
+                    server.auxiliary_remote_path,
+                    server
+                )
+
     finally:
         if sftp:
             sftp.close()
         ssh.close()
+
+def _cleanup_empty_dirs(sftp, start_dir: str, stop_dir: str, server: ServerConfig):
+    current = start_dir.rstrip("/")
+
+    while current.startswith(stop_dir.rstrip("/")):
+        try:
+            if sftp.listdir(current):
+                break
+
+            sftp.rmdir(current)
+            logger.info(
+                "action=remove_empty_dir path=%s target=%s",
+                current, server.host
+            )
+        except IOError:
+            break
+
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+
+        current = parent
