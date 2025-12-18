@@ -1,22 +1,15 @@
-watch_dir: "/home/vboxuser/ymalfiles"
+watch_dir: "/opt/spfc/etc/mo"
 debounce_seconds: 1.5
 status_check:
-  process_name: "cron"
-  min_uptime_seconds: 5
+  process_name: "analyzer"
+  min_uptime_seconds: 10
 
 servers:
-  - host: "192.168.56.101"
+  - host: "192.168.100.123"
     ssh_port: 22
-    api_port: 5000
-    username: "vboxuser"
-    key_filename: "/home/vboxuser/.ssh/id_ed25519"
-    remote_path: "/home/vboxuser/ymalfiles"
-    auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"
+    api_port: 10505
+    username: "syncslave"
+    key_filename: "/home/syncuser/.ssh/id_ed25519"
+    remote_path: "/opt/spfc/etc/mo"
+    auxiliary_remote_path: "/opt/spfc/etc/mo.enabled"
 
-#  - host: "192.168.56.102"
-#    ssh_port: 22
-#    api_port: 5000
-#    username: "vboxuser"
-#    key_filename: "/home/vboxuser/.ssh/id_ed25519"
-#    remote_path: "/home/vboxuser/ymalfiles"
-#    auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"
