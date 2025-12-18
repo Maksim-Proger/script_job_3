@@ -53,6 +53,44 @@ def worker(watch_dir: str):
         except Exception:
             logger.exception("action=worker_fatal_error")
 
+def is_yaml_consistent(yaml_path: str) -> bool:
+    save_path = yaml_path + ".save"
+
+    if not os.path.isfile(yaml_path):
+        logger.error(
+            "action=consistency_check_failed reason=yaml_missing path=%s",
+            yaml_path
+        )
+        return False
+
+    if not os.path.isfile(save_path):
+        logger.error(
+            "action=consistency_check_failed reason=save_missing path=%s",
+            save_path
+        )
+        return False
+
+    try:
+        with open(yaml_path, "rb") as f1, open(save_path, "rb") as f2:
+            if f1.read() != f2.read():
+                logger.error(
+                    "action=consistency_check_failed reason=content_mismatch path=%s",
+                    yaml_path
+                )
+                return False
+    except OSError as e:
+        logger.error(
+            "action=consistency_check_failed reason=io_error path=%s error=%s",
+            yaml_path, e
+        )
+        return False
+
+    logger.info(
+        "action=consistency_check_ok path=%s",
+        yaml_path
+    )
+    return True
+
 class ConfigChangeHandler(FileSystemEventHandler):
     def __init__(self,
                  servers,
@@ -88,9 +126,9 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
         path = os.path.abspath(src)
 
-        if not path.endswith(".save"):
+        if not path.endswith(".yaml"):
             logger.debug(
-                "action=skip path=%s reason=not_save",
+                "action=skip path=%s reason=not_yaml",
                 path
             )
             return
@@ -120,10 +158,7 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not os.path.isfile(path):
             return
 
-        if path.endswith(".yaml.save"):
-            yaml_path = path[:-5]
-        else:
-            yaml_path = path
+        yaml_path = path
 
         if event_type == "created":
             action = "new"
@@ -142,11 +177,12 @@ class ConfigChangeHandler(FileSystemEventHandler):
             logger.error("action=service_check_failed")
             return
 
-        filename = os.path.basename(yaml_path)
-        logger.info(
-            "action=change_detected path=%s triggered_by=.save",
-            filename
-        )
+        if not is_yaml_consistent(yaml_path):
+            logger.error(
+                "action=sync_skipped reason=inconsistent_yaml path=%s",
+                yaml_path
+            )
+            return
 
         with active_tasks_lock:
             if yaml_path not in active_tasks:
