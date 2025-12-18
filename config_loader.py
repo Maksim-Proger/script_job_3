@@ -28,12 +28,11 @@ class StatusCheckConfig(BaseModel):
 
 class AppConfig(BaseModel):
     watch_dir: str
-    auxiliary_watch_dir: str
     debounce_seconds: float = Field(ge=0.1, le=30)
     servers: List[ServerConfig]
     status_check: StatusCheckConfig
 
-    @field_validator("watch_dir", "auxiliary_watch_dir")
+    @field_validator("watch_dir")
     def validate_local_directories(cls, path: str):
         if not os.path.isdir(path):
             raise ValueError(f"directory does not exist: {path}")
@@ -47,7 +46,3 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         raw = yaml.safe_load(fp)
 
     return AppConfig.model_validate(raw)
-
-
-
-

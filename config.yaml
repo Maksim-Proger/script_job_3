@@ -1,5 +1,4 @@
 watch_dir: "/home/vboxuser/ymalfiles"
-auxiliary_watch_dir: "/home/vboxuser/ymalfiles.enabled"
 debounce_seconds: 1.5
 status_check:
   process_name: "cron"
@@ -14,10 +13,10 @@ servers:
     remote_path: "/home/vboxuser/ymalfiles"
     auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"
 
-  - host: "192.168.56.102"
-    ssh_port: 22
-    api_port: 5000
-    username: "vboxuser"
-    key_filename: "/home/vboxuser/.ssh/id_ed25519"
-    remote_path: "/home/vboxuser/ymalfiles"
-    auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"
+#  - host: "192.168.56.102"
+#    ssh_port: 22
+#    api_port: 5000
+#    username: "vboxuser"
+#    key_filename: "/home/vboxuser/.ssh/id_ed25519"
+#    remote_path: "/home/vboxuser/ymalfiles"
+#    auxiliary_remote_path: "/home/vboxuser/ymalfiles.enabled"

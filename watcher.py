@@ -96,17 +96,13 @@ class ConfigChangeHandler(FileSystemEventHandler):
                  servers,
                  debounce_seconds: float,
                  watch_dir: str,
-                 auxiliary_watch_dir: str,
                  status_check):
         super().__init__()
         self.servers = servers
         self.debounce_seconds = debounce_seconds
         self.watch_dir = os.path.abspath(watch_dir)
-        self.auxiliary_watch_dir = os.path.abspath(auxiliary_watch_dir)
         self.status_check = status_check
         self.last_sync_time = {}
-
-        os.makedirs(self.auxiliary_watch_dir, exist_ok=True)
 
     def _debounce_check(self, path):
         now = time.time()
@@ -136,13 +132,6 @@ class ConfigChangeHandler(FileSystemEventHandler):
         if not path.startswith(self.watch_dir + os.sep):
             logger.debug(
                 "action=skip path=%s reason=outside_watch_dir",
-                path
-            )
-            return
-
-        if path.startswith(self.auxiliary_watch_dir + os.sep):
-            logger.debug(
-                "action=skip path=%s reason=inside_aux_dir",
                 path
             )
             return
@@ -269,11 +258,12 @@ class ConfigChangeHandler(FileSystemEventHandler):
 
     on_deleted = _file_deleted
 
-def start_watcher(watch_dir: str,
-                  auxiliary_watch_dir: str,
-                  servers,
-                  debounce_seconds: float,
-                  status_check):
+def start_watcher(
+        watch_dir: str,
+        servers,
+        debounce_seconds: float,
+        status_check
+):
     logger.info(
         "action=start_watcher path=%s",
         watch_dir
@@ -283,7 +273,6 @@ def start_watcher(watch_dir: str,
         servers,
         debounce_seconds,
         watch_dir,
-        auxiliary_watch_dir,
         status_check
     )
 
